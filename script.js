@@ -1,1851 +1,494 @@
 "use strict";
 
-/* =========================
-   Versão + Helpers
-========================= */
-const APP_VERSION = "v2.0.0";
-const STORAGE_KEY_V2 = "custos_dashboard_v2";
-const STORAGE_KEY_V1 = "custos_dashboard_v1";
-
+const APP_VERSION = "v2.1.0";
+const STORAGE_KEY = "custos_dashboard_v2";
+const LEGACY_KEY = "custos_dashboard_v1";
 const brl = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
+
+const $ = (id) => document.getElementById(id);
+const uid = () => Math.random().toString(16).slice(2) + Date.now().toString(16);
+const clamp = (n, min, max) => Math.min(max, Math.max(min, Number.isFinite(n) ? n : min));
+const escapeHtml = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
 
 function parseNumberBR(value) {
   if (value == null) return 0;
-
-  let s = String(value)
-    .trim()
-    .replace(/\s/g, "")
-    .replace(/^R\$/i, "");
-
+  let s = String(value).trim().replace(/\s/g, "").replace(/R\$/gi, "").replace(/%/g, "");
   if (!s) return 0;
 
   const lastComma = s.lastIndexOf(",");
   const lastDot = s.lastIndexOf(".");
-
   if (lastComma >= 0 && lastDot >= 0) {
-    if (lastComma > lastDot) {
-      // pt-BR: 1.234,56
-      s = s.replace(/\./g, "").replace(",", ".");
-    } else {
-      // formato internacional: 1,234.56
-      s = s.replace(/,/g, "");
-    }
+    if (lastComma > lastDot) s = s.replace(/\./g, "").replace(",", ".");
+    else s = s.replace(/,/g, "");
   } else if (lastComma >= 0) {
-    // 1234,56
     s = s.replace(/\./g, "").replace(",", ".");
-  } else if (lastDot >= 0) {
-    // Aceita ponto como separador decimal. Se houver vários, preserva apenas o último.
+  } else if ((s.match(/\./g) || []).length > 1) {
     const parts = s.split(".");
-    if (parts.length > 2) {
-      const decimal = parts.pop();
-      s = `${parts.join("")}.${decimal}`;
-    }
+    const decimal = parts.pop();
+    s = parts.join("") + "." + decimal;
   }
-
   s = s.replace(/[^0-9+\-.]/g, "");
   const n = Number(s);
   return Number.isFinite(n) ? n : 0;
 }
 
-function formatNumberBR(n, decimals = 3) {
-  if (!Number.isFinite(n)) return "0";
-  const fixed = n.toFixed(decimals);
-  const trimmed = fixed.replace(/0+$/, "").replace(/\.$/, "");
-  return trimmed.replace(".", ",");
+function formatNumber(n, decimals = 2) {
+  if (!Number.isFinite(Number(n))) return "0";
+  return Number(n).toFixed(decimals).replace(/0+$/, "").replace(/\.$/, "").replace(".", ",");
 }
-
-function formatMoneyInput(n) {
-  if (!Number.isFinite(n)) return "0,00";
-  return n.toFixed(2).replace(".", ",");
-}
-
-function formatQty(qty, unit) {
-  const n = Number(qty);
-  if (!Number.isFinite(n)) return `0 ${unit}`;
-  const pretty =
-    n % 1 === 0 ? String(n.toFixed(0)) : String(n.toFixed(3)).replace(/0+$/, "").replace(/\.$/, "");
-  return `${pretty} ${unit}`;
-}
-
-function normalizeUnitPair(unit) {
+function formatMoneyInput(n) { return Number(n || 0).toFixed(2).replace(".", ","); }
+function normalizeUnit(unit) {
   if (unit === "kg" || unit === "g") return { base: "g", factor: unit === "kg" ? 1000 : 1 };
   if (unit === "l" || unit === "ml") return { base: "ml", factor: unit === "l" ? 1000 : 1 };
   return { base: "un", factor: 1 };
 }
-
-function calcUnitCostBRL(priceTotal, qtyBought, unit) {
-  const { factor } = normalizeUnitPair(unit);
-  const qtyInBase = qtyBought * factor;
-  if (qtyInBase <= 0) return 0;
-  return priceTotal / qtyInBase; // R$ por unidade base (g/ml/un)
+function displayUnit(unit) { return normalizeUnit(unit).base; }
+function unitCost(price, qty, unit) {
+  const totalBase = Number(qty) * normalizeUnit(unit).factor;
+  return totalBase > 0 ? Number(price) / totalBase : 0;
+}
+function dateLabel(ts) {
+  try { return new Date(ts).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "2-digit" }); }
+  catch { return "—"; }
 }
 
-function displayUnit(unit) {
-  if (unit === "kg" || unit === "g") return "g";
-  if (unit === "l" || unit === "ml") return "ml";
-  return "un";
-}
-
-function uid() {
-  return Math.random().toString(16).slice(2) + Date.now().toString(16);
-}
-
-function escapeHtml(str) {
-  return String(str)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
-function clamp(n, min, max) {
-  if (!Number.isFinite(n)) return min;
-  return Math.min(max, Math.max(min, n));
-}
-
-function normalizeNameKey(s) {
-  return String(s || "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, " ");
-}
-
-/* =========================
-   Modal (12 + 18)
-========================= */
-const modalRoot = document.getElementById("modalRoot");
-const modalDialog = modalRoot.querySelector(".modal__dialog");
-const modalTitle = document.getElementById("modalTitle");
-const modalBody = document.getElementById("modalDesc");
-const modalActions = document.getElementById("modalActions");
-
-let modalResolver = null;
-let lastFocused = null;
-
-function openModal({ title, body, actions }) {
-  lastFocused = document.activeElement;
-  modalTitle.textContent = title;
-  modalBody.innerHTML = "";
-  modalActions.innerHTML = "";
-
-  if (typeof body === "string") {
-    const p = document.createElement("p");
-    p.className = "muted";
-    p.textContent = body;
-    modalBody.appendChild(p);
-  } else if (body instanceof Node) {
-    modalBody.appendChild(body);
-  }
-
-  actions.forEach((a) => {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = a.className || "btn btn--ghost";
-    btn.textContent = a.label;
-    btn.addEventListener("click", () => {
-      closeModal(a.value);
-    });
-    modalActions.appendChild(btn);
-  });
-
-  modalRoot.hidden = false;
-  document.body.style.overflow = "hidden";
-  requestAnimationFrame(() => modalDialog.focus());
-
-  return new Promise((resolve) => {
-    modalResolver = resolve;
-  });
-}
-
-function closeModal(value = null) {
-  modalRoot.hidden = true;
-  document.body.style.overflow = "";
-  const resolve = modalResolver;
-  modalResolver = null;
-  if (lastFocused && typeof lastFocused.focus === "function") {
-    requestAnimationFrame(() => lastFocused.focus());
-  }
-  if (resolve) resolve(value);
-}
-
-modalRoot.addEventListener("click", (e) => {
-  const close = e.target && e.target.getAttribute && e.target.getAttribute("data-modal-close");
-  if (close === "true") closeModal(null);
-});
-
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") {
-    if (!modalRoot.hidden) {
-      e.preventDefault();
-      closeModal(null);
-      return;
-    }
-
-    if (editingItemId || editingRecipeId) {
-      e.preventDefault();
-      editingItemId = null;
-      editingRecipeId = null;
-      renderAll();
-      return;
-    }
-  }
-});
-
-async function modalAlert(message, title = "Aviso") {
-  await openModal({
-    title,
-    body: message,
-    actions: [{ label: "Entendi", value: true, className: "btn btn--primary" }],
-  });
-}
-
-async function modalConfirm(message, title = "Confirmar") {
-  const res = await openModal({
-    title,
-    body: message,
-    actions: [
-      { label: "Cancelar", value: false, className: "btn btn--ghost" },
-      { label: "Confirmar", value: true, className: "btn btn--danger" },
-    ],
-  });
-  return Boolean(res);
-}
-
-async function modalPrompt({ title, label, defaultValue = "", placeholder = "" }) {
-  const wrap = document.createElement("div");
-  wrap.className = "field";
-  const lab = document.createElement("label");
-  lab.textContent = label;
-  const input = document.createElement("input");
-  input.type = "text";
-  input.value = defaultValue;
-  input.placeholder = placeholder;
-  input.className = "edit-input";
-  input.autocomplete = "off";
-  input.spellcheck = false;
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      // Simula clique no confirmar
-      const confirmBtn = modalActions.querySelector("button.btn--primary");
-      if (confirmBtn) confirmBtn.click();
-    }
-  });
-  wrap.appendChild(lab);
-  wrap.appendChild(input);
-
-  const res = await openModal({
-    title,
-    body: wrap,
-    actions: [
-      { label: "Cancelar", value: null, className: "btn btn--ghost" },
-      { label: "Salvar", value: "ok", className: "btn btn--primary" },
-    ],
-  });
-
-  if (res !== "ok") return null;
-  return input.value;
-}
-
-/* =========================
-   State
-========================= */
 const state = {
-  items: [],   // {id, name, unitBuy, priceTotal, qtyBought, unitCostBase}
-  recipe: [],  // {id, itemId, qtyUsedBase, cost}
-  pricing: { portions: 1, margin: 70, extra: 0, sale: 0, method: "markup", feePercent: 0 },
-  models: [],  // {id, name, createdAt, items:[], recipe:[], pricing:{}}
+  items: [],
+  recipe: [],
+  pricing: { portions: 1, margin: 20, extra: 0, sale: 0, feePercent: 0, channel: "counter" },
+  models: [],
+  productName: "",
 };
 
 let editingItemId = null;
 let editingRecipeId = null;
+let modalResolver = null;
+let lastFocused = null;
 
-/* =========================
-   Elements
-========================= */
-const formItem = document.getElementById("formItem");
-const itemNome = document.getElementById("itemNome");
-const itemUnidadeCompra = document.getElementById("itemUnidadeCompra");
-const itemPrecoTotal = document.getElementById("itemPrecoTotal");
-const itemQtdCompra = document.getElementById("itemQtdCompra");
-const tbodyItens = document.getElementById("tbodyItens");
+const els = {
+  formItem: $("formItem"), itemNome: $("itemNome"), itemUnidadeCompra: $("itemUnidadeCompra"), itemPrecoTotal: $("itemPrecoTotal"), itemQtdCompra: $("itemQtdCompra"), ingredientList: $("ingredientList"), itemCount: $("itemCount"), ingredientManager: $("ingredientManager"), btnDemo: $("btnDemo"),
+  formUso: $("formUso"), usoItem: $("usoItem"), usoQtd: $("usoQtd"), usoUnit: $("usoUnit"), recipeList: $("recipeList"),
+  productName: $("productName"), numPorcoes: $("numPorcoes"), salesChannel: $("salesChannel"), feeField: $("feeField"), feeLabel: $("feeLabel"), feeHelp: $("feeHelp"), feePercent: $("feePercent"), taxaExtra: $("taxaExtra"), margemLucro: $("margemLucro"), precoVenda: $("precoVenda"),
+  summaryCost: $("summaryCost"), summaryPrice: $("summaryPrice"), summaryProfit: $("summaryProfit"), kpiCustoTotal: $("kpiCustoTotal"), costTotalHelp: $("costTotalHelp"),
+  resultSuggested: $("resultSuggested"), resultSubtitle: $("resultSubtitle"), resultCost: $("resultCost"), resultFeeRow: $("resultFeeRow"), resultFeeLabel: $("resultFeeLabel"), resultFee: $("resultFee"), resultNet: $("resultNet"), resultProfit: $("resultProfit"), breakEvenPrice: $("breakEvenPrice"), priceStatus: $("priceStatus"),
+  currentPriceAnalysis: $("currentPriceAnalysis"), currentAnalysisIcon: $("currentAnalysisIcon"), currentAnalysisTitle: $("currentAnalysisTitle"), currentAnalysisText: $("currentAnalysisText"), currentProfit: $("currentProfit"), currentMargin: $("currentMargin"),
+  detailIngredients: $("detailIngredients"), detailExtra: $("detailExtra"), detailFeePercent: $("detailFeePercent"), detailProfitPercent: $("detailProfitPercent"),
+  modelName: $("modelName"), modelNameErr: $("modelNameErr"), btnSaveModel: $("btnSaveModel"), modelsList: $("modelsList"),
+  saveStatus: $("saveStatus"), btnHelp: $("btnHelp"), btnExport: $("btnExport"), fileImport: $("fileImport"), btnReset: $("btnReset"), appVersion: $("appVersion"),
+  modalRoot: $("modalRoot"), modalDialog: document.querySelector(".modal__dialog"), modalTitle: $("modalTitle"), modalDesc: $("modalDesc"), modalActions: $("modalActions"),
+};
 
-const formUso = document.getElementById("formUso");
-const usoItem = document.getElementById("usoItem");
-const usoQtd = document.getElementById("usoQtd");
-const usoHint = document.getElementById("usoHint");
-const tbodyReceita = document.getElementById("tbodyReceita");
+function defaultPricing() { return { portions: 1, margin: 20, extra: 0, sale: 0, feePercent: 0, channel: "counter" }; }
 
-const modelName = document.getElementById("modelName");
-const btnSaveModel = document.getElementById("btnSaveModel");
-const btnClearModelName = document.getElementById("btnClearModelName");
-const tbodyModels = document.getElementById("tbodyModels");
-
-const numPorcoes = document.getElementById("numPorcoes");
-const margemLucro = document.getElementById("margemLucro");
-const taxaExtra = document.getElementById("taxaExtra");
-const precoVenda = document.getElementById("precoVenda");
-const pricingMethod = document.getElementById("pricingMethod");
-const feePercent = document.getElementById("feePercent");
-const margemLabel = document.getElementById("margemLabel");
-const margemHelp = document.getElementById("margemHelp");
-const methodHelp = document.getElementById("methodHelp");
-
-const resultSuggested = document.getElementById("resultSuggested");
-const resultMethod = document.getElementById("resultMethod");
-const kpiBreakEven = document.getElementById("kpiBreakEven");
-const kpiFeeEstimated = document.getElementById("kpiFeeEstimated");
-const kpiSuggestedMargin = document.getElementById("kpiSuggestedMargin");
-const kpiFoodCost = document.getElementById("kpiFoodCost");
-const pricingHealth = document.getElementById("pricingHealth");
-const pricingHealthText = document.getElementById("pricingHealthText");
-
-const statItems = document.getElementById("statItems");
-const statRecipe = document.getElementById("statRecipe");
-const statModels = document.getElementById("statModels");
-const lastSaved = document.getElementById("lastSaved");
-const itemSearch = document.getElementById("itemSearch");
-
-const kpiCustoTotal = document.getElementById("kpiCustoTotal");
-const kpiCustoPorcao = document.getElementById("kpiCustoPorcao");
-const kpiPrecoSugerido = document.getElementById("kpiPrecoSugerido");
-const kpiLucroEstimado = document.getElementById("kpiLucroEstimado");
-const kpiDetalhe = document.getElementById("kpiDetalhe");
-
-const boxLucroReal = document.getElementById("boxLucroReal");
-const kpiLucroReal = document.getElementById("kpiLucroReal");
-const kpiMargemReal = document.getElementById("kpiMargemReal");
-
-const breakdownList = document.getElementById("breakdownList");
-
-const btnLimparReceita = document.getElementById("btnLimparReceita");
-const btnReset = document.getElementById("btnReset");
-const btnDemo = document.getElementById("btnDemo");
-const btnExport = document.getElementById("btnExport");
-const btnExportCSV = document.getElementById("btnExportCSV");
-const fileImport = document.getElementById("fileImport");
-const btnHelp = document.getElementById("btnHelp");
-
-const appVersion = document.getElementById("appVersion");
-
-/* =========================
-   Storage (load/save) + Import Validação (23)
-========================= */
-function save() {
-  localStorage.setItem(STORAGE_KEY_V2, JSON.stringify(state));
-  if (lastSaved) {
-    const now = new Date();
-    lastSaved.textContent = `Salvo às ${now.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
-  }
-}
-
-function migrateFromV1IfNeeded() {
-  const rawV2 = localStorage.getItem(STORAGE_KEY_V2);
-  if (rawV2) return;
-
-  const rawV1 = localStorage.getItem(STORAGE_KEY_V1);
-  if (!rawV1) return;
-
-  try {
-    const data = JSON.parse(rawV1);
-    if (!data || typeof data !== "object") return;
-
-    const migrated = {
-      items: Array.isArray(data.items) ? data.items : [],
-      recipe: Array.isArray(data.recipe) ? data.recipe : [],
-      pricing: data.pricing && typeof data.pricing === "object" ? data.pricing : { portions: 1, margin: 70, extra: 0, sale: 0, method: "markup", feePercent: 0 },
-      models: [],
-    };
-
-    const cleaned = validateImportedState(migrated);
-    state.items = cleaned.items;
-    state.recipe = cleaned.recipe;
-    state.pricing = cleaned.pricing;
-    state.models = cleaned.models;
-
-    save();
-  } catch (_) {}
-}
-
-function load() {
-  migrateFromV1IfNeeded();
-  const raw = localStorage.getItem(STORAGE_KEY_V2);
-  if (!raw) return;
-
-  try {
-    const data = JSON.parse(raw);
-    const cleaned = validateImportedState(data);
-    state.items = cleaned.items;
-    state.recipe = cleaned.recipe;
-    state.pricing = cleaned.pricing;
-    state.models = cleaned.models;
-  } catch (_) {}
-}
-
-function validateImportedState(data) {
-  const out = {
-    items: [],
-    recipe: [],
-    pricing: { portions: 1, margin: 70, extra: 0, sale: 0, method: "markup", feePercent: 0 },
-    models: [],
-  };
-
-  if (!data || typeof data !== "object") return out;
-
+function normalizeState(raw) {
+  const out = { items: [], recipe: [], pricing: defaultPricing(), models: [], productName: String(raw?.productName || "").slice(0, 80) };
+  if (!raw || typeof raw !== "object") return out;
   const allowedUnits = new Set(["kg", "g", "l", "ml", "un"]);
 
-  // Items
-  if (Array.isArray(data.items)) {
-    out.items = data.items
-      .map((it) => {
-        const id = String(it && it.id ? it.id : uid());
-        const name = String(it && it.name ? it.name : "").trim();
-        const unitBuy = String(it && it.unitBuy ? it.unitBuy : "g");
-        const priceTotal = Number(it && it.priceTotal);
-        const qtyBought = Number(it && it.qtyBought);
-        const unitCostBase = Number(it && it.unitCostBase);
-
-        if (!name) return null;
-        if (!allowedUnits.has(unitBuy)) return null;
-        if (!Number.isFinite(priceTotal) || priceTotal < 0) return null;
-        if (!Number.isFinite(qtyBought) || qtyBought <= 0) return null;
-
-        const computedUnitCost = calcUnitCostBRL(priceTotal, qtyBought, unitBuy);
-        const safeUnitCost = Number.isFinite(unitCostBase) && unitCostBase > 0 ? unitCostBase : computedUnitCost;
-
-        return {
-          id,
-          name,
-          unitBuy,
-          priceTotal: priceTotal,
-          qtyBought: qtyBought,
-          unitCostBase: safeUnitCost,
-        };
-      })
-      .filter(Boolean);
+  if (Array.isArray(raw.items)) {
+    out.items = raw.items.map((it) => {
+      const name = String(it?.name || "").trim();
+      const unitBuy = allowedUnits.has(it?.unitBuy) ? it.unitBuy : "g";
+      const priceTotal = Number(it?.priceTotal);
+      const qtyBought = Number(it?.qtyBought);
+      if (!name || !(priceTotal >= 0) || !(qtyBought > 0)) return null;
+      return { id: String(it?.id || uid()), name, unitBuy, priceTotal, qtyBought, unitCostBase: unitCost(priceTotal, qtyBought, unitBuy) };
+    }).filter(Boolean);
   }
 
-  // Pricing
-  if (data.pricing && typeof data.pricing === "object") {
-    const portions = Math.max(1, Math.floor(Number(data.pricing.portions) || 1));
-    const importedMargin = Number(data.pricing.margin);
-    const margin = Number.isFinite(importedMargin) ? clamp(importedMargin, 0, 10000) : 70;
-    const extra = Math.max(0, Number(data.pricing.extra) || 0);
-    const sale = Math.max(0, Number(data.pricing.sale) || 0);
-    const method = data.pricing.method === "margin" ? "margin" : "markup";
-    const feePercent = clamp(Number(data.pricing.feePercent) || 0, 0, 99.9);
-    out.pricing = { portions, margin, extra, sale, method, feePercent };
+  const ids = new Set(out.items.map((x) => x.id));
+  if (Array.isArray(raw.recipe)) {
+    out.recipe = raw.recipe.map((r) => {
+      const itemId = String(r?.itemId || "");
+      const qtyUsedBase = Number(r?.qtyUsedBase);
+      const item = out.items.find((x) => x.id === itemId);
+      if (!ids.has(itemId) || !(qtyUsedBase > 0) || !item) return null;
+      return { id: String(r?.id || uid()), itemId, qtyUsedBase, cost: qtyUsedBase * item.unitCostBase };
+    }).filter(Boolean);
   }
 
-  // Recipe (só aceita itemId existente)
-  const itemIds = new Set(out.items.map((i) => i.id));
-  if (Array.isArray(data.recipe)) {
-    out.recipe = data.recipe
-      .map((r) => {
-        const id = String(r && r.id ? r.id : uid());
-        const itemId = String(r && r.itemId ? r.itemId : "");
-        const qtyUsedBase = Number(r && r.qtyUsedBase);
-        if (!itemId || !itemIds.has(itemId)) return null;
-        if (!Number.isFinite(qtyUsedBase) || qtyUsedBase <= 0) return null;
+  const p = raw.pricing && typeof raw.pricing === "object" ? raw.pricing : {};
+  let margin = Number(p.margin);
+  // Na versão anterior "margin" podia ser markup. Para não trazer 70% como alvo de lucro por engano,
+  // mantemos valores plausíveis de margem e usamos 20% quando o dado antigo era markup.
+  if (p.method === "markup" && margin > 50) margin = 20;
+  out.pricing = {
+    portions: Math.max(1, Math.floor(Number(p.portions) || 1)),
+    margin: clamp(Number.isFinite(margin) ? margin : 20, 0, 90),
+    extra: Math.max(0, Number(p.extra) || 0),
+    sale: Math.max(0, Number(p.sale) || 0),
+    feePercent: clamp(Number(p.feePercent) || 0, 0, 95),
+    channel: ["counter", "whatsapp", "ifood", "marketplace"].includes(p.channel) ? p.channel : ((Number(p.feePercent) || 0) > 0 ? "marketplace" : "counter"),
+  };
 
-        const it = out.items.find((x) => x.id === itemId);
-        const cost = qtyUsedBase * (it ? it.unitCostBase : 0);
-
-        return { id, itemId, qtyUsedBase, cost: Math.max(0, cost) };
-      })
-      .filter(Boolean);
+  if (Array.isArray(raw.models)) {
+    out.models = raw.models.map((m) => {
+      const name = String(m?.name || "").trim();
+      if (!name) return null;
+      const modelItems = Array.isArray(m.items) ? m.items.map((it) => {
+        const n = String(it?.name || "").trim();
+        const u = allowedUnits.has(it?.unitBuy) ? it.unitBuy : "g";
+        const pt = Number(it?.priceTotal), qb = Number(it?.qtyBought);
+        if (!n || !(pt >= 0) || !(qb > 0)) return null;
+        return { name: n, unitBuy: u, priceTotal: pt, qtyBought: qb, unitCostBase: unitCost(pt, qb, u) };
+      }).filter(Boolean) : [];
+      const modelRecipe = Array.isArray(m.recipe) ? m.recipe.map((r) => ({ itemKey: String(r?.itemKey || "").trim(), qtyUsedBase: Number(r?.qtyUsedBase) })).filter((r) => r.itemKey && r.qtyUsedBase > 0) : [];
+      const mp = m.pricing || {};
+      let mm = Number(mp.margin);
+      if (mp.method === "markup" && mm > 50) mm = 20;
+      return {
+        id: String(m?.id || uid()), name, createdAt: Number(m?.createdAt) || Date.now(), items: modelItems, recipe: modelRecipe,
+        pricing: { portions: Math.max(1, Math.floor(Number(mp.portions) || 1)), margin: clamp(Number.isFinite(mm) ? mm : 20, 0, 90), extra: Math.max(0, Number(mp.extra) || 0), sale: Math.max(0, Number(mp.sale) || 0), feePercent: clamp(Number(mp.feePercent) || 0, 0, 95), channel: ["counter", "whatsapp", "ifood", "marketplace"].includes(mp.channel) ? mp.channel : ((Number(mp.feePercent) || 0) > 0 ? "marketplace" : "counter") },
+        productName: String(m?.productName || m?.name || "").slice(0, 80),
+      };
+    }).filter(Boolean);
   }
-
-  // Models
-  if (Array.isArray(data.models)) {
-    out.models = data.models
-      .map((m) => {
-        const id = String(m && m.id ? m.id : uid());
-        const name = String(m && m.name ? m.name : "").trim();
-        const createdAt = Number(m && m.createdAt) || Date.now();
-        if (!name) return null;
-
-        const items = Array.isArray(m.items)
-          ? m.items
-              .map((it) => {
-                const n = String(it && it.name ? it.name : "").trim();
-                const u = String(it && it.unitBuy ? it.unitBuy : "");
-                const pt = Number(it && it.priceTotal);
-                const qb = Number(it && it.qtyBought);
-                const uc = Number(it && it.unitCostBase);
-
-                if (!n) return null;
-                if (!allowedUnits.has(u)) return null;
-                if (!Number.isFinite(pt) || pt < 0) return null;
-                if (!Number.isFinite(qb) || qb <= 0) return null;
-
-                const computed = calcUnitCostBRL(pt, qb, u);
-                const safe = Number.isFinite(uc) && uc > 0 ? uc : computed;
-
-                return { name: n, unitBuy: u, priceTotal: pt, qtyBought: qb, unitCostBase: safe };
-              })
-              .filter(Boolean)
-          : [];
-
-        const recipe = Array.isArray(m.recipe)
-          ? m.recipe
-              .map((r) => {
-                const key = String(r && r.itemKey ? r.itemKey : "").trim();
-                const qty = Number(r && r.qtyUsedBase);
-                if (!key) return null;
-                if (!Number.isFinite(qty) || qty <= 0) return null;
-                return { itemKey: key, qtyUsedBase: qty };
-              })
-              .filter(Boolean)
-          : [];
-
-        const pricing = m.pricing && typeof m.pricing === "object"
-          ? {
-              portions: Math.max(1, Math.floor(Number(m.pricing.portions) || 1)),
-              margin: Number.isFinite(Number(m.pricing.margin)) ? clamp(Number(m.pricing.margin), 0, 10000) : 70,
-              extra: Math.max(0, Number(m.pricing.extra) || 0),
-              sale: Math.max(0, Number(m.pricing.sale) || 0),
-              method: m.pricing.method === "margin" ? "margin" : "markup",
-              feePercent: clamp(Number(m.pricing.feePercent) || 0, 0, 99.9),
-            }
-          : { portions: 1, margin: 70, extra: 0, sale: 0, method: "markup", feePercent: 0 };
-
-        return { id, name, createdAt, items, recipe, pricing };
-      })
-      .filter(Boolean);
-  }
-
   return out;
 }
 
-/* =========================
-   UI: Erros/Validação (15)
-========================= */
-function setFieldError(inputEl, msg) {
-  const field = inputEl.closest(".field");
-  const errId = inputEl.getAttribute("aria-describedby") || "";
-  const errElId = errId.split(" ").find((x) => x.toLowerCase().endsWith("err"));
-  const errEl = errElId ? document.getElementById(errElId) : null;
-
-  if (field) field.classList.toggle("field--error", Boolean(msg));
-  inputEl.setAttribute("aria-invalid", msg ? "true" : "false");
-  if (errEl) errEl.textContent = msg || "";
+function load() {
+  let raw = localStorage.getItem(STORAGE_KEY);
+  if (!raw) raw = localStorage.getItem(LEGACY_KEY);
+  if (!raw) return;
+  try { Object.assign(state, normalizeState(JSON.parse(raw))); } catch (_) {}
+}
+function save() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  const now = new Date();
+  els.saveStatus.textContent = `Salvo às ${now.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
 }
 
-function clearErrors(scopeEl) {
-  scopeEl.querySelectorAll(".field").forEach((f) => f.classList.remove("field--error"));
-  scopeEl.querySelectorAll("[aria-invalid='true']").forEach((el) => el.setAttribute("aria-invalid", "false"));
-  scopeEl.querySelectorAll(".error").forEach((e) => (e.textContent = ""));
-}
-
-function validateItemForm() {
-  clearErrors(formItem);
-
-  const name = itemNome.value.trim();
-  const price = parseNumberBR(itemPrecoTotal.value);
-  const qty = parseNumberBR(itemQtdCompra.value);
-
-  let ok = true;
-
-  if (!name || name.length < 2) {
-    setFieldError(itemNome, "Informe um nome válido (mínimo 2 caracteres).");
-    ok = false;
-  }
-  if (!(price > 0)) {
-    setFieldError(itemPrecoTotal, "Informe um preço maior que zero.");
-    ok = false;
-  }
-  if (!(qty > 0)) {
-    setFieldError(itemQtdCompra, "Informe uma quantidade maior que zero.");
-    ok = false;
-  }
-
-  return ok;
-}
-
-function validateRecipeForm() {
-  clearErrors(formUso);
-
-  const itemId = usoItem.value;
-  const qty = parseNumberBR(usoQtd.value);
-
-  let ok = true;
-
-  if (!itemId) {
-    setFieldError(usoItem, "Selecione um item cadastrado.");
-    ok = false;
-  }
-  if (!(qty > 0)) {
-    setFieldError(usoQtd, "Informe uma quantidade maior que zero.");
-    ok = false;
-  }
-
-  return ok;
-}
-
-function validatePricingInputs() {
-  const portions = Math.max(1, Math.floor(parseNumberBR(numPorcoes.value) || 1));
-  const margin = Math.max(0, parseNumberBR(margemLucro.value) || 0);
-  const extra = Math.max(0, parseNumberBR(taxaExtra.value) || 0);
-  const sale = Math.max(0, parseNumberBR(precoVenda.value) || 0);
-  const method = pricingMethod && pricingMethod.value === "margin" ? "margin" : "markup";
-  const fee = clamp(parseNumberBR(feePercent ? feePercent.value : 0) || 0, 0, 99.9);
-
-  clearErrors(document.querySelector(".pricing-controls") || document.querySelector(".pricing-panel"));
-
-  if (parseNumberBR(numPorcoes.value) <= 0) setFieldError(numPorcoes, "Use 1 ou mais porções.");
-  if (parseNumberBR(margemLucro.value) < 0) setFieldError(margemLucro, "O percentual não pode ser negativo.");
-  if (parseNumberBR(taxaExtra.value) < 0) setFieldError(taxaExtra, "Os custos extras não podem ser negativos.");
-  if (parseNumberBR(precoVenda.value) < 0) setFieldError(precoVenda, "O preço de venda não pode ser negativo.");
-  if (feePercent && (parseNumberBR(feePercent.value) < 0 || parseNumberBR(feePercent.value) >= 100)) {
-    setFieldError(feePercent, "Use uma taxa entre 0% e 99,9%.");
-  }
-  if (method === "margin" && margin + fee >= 100) {
-    setFieldError(margemLucro, "Margem + taxa sobre a venda deve ser menor que 100%.");
-  }
-
-  return { portions, margin, extra, sale, method, feePercent: fee };
-}
-
-/* =========================
-   Autoformatação (16)
-========================= */
-function applyFormatOnBlur(el) {
-  const type = el.getAttribute("data-format");
-  const n = parseNumberBR(el.value);
-
-  if (!type) return;
-
-  if (type === "currency") {
-    el.value = el.value.trim() === "" ? "" : formatMoneyInput(Math.max(0, n));
-    return;
-  }
-
-  if (type === "int") {
-    const v = Math.max(1, Math.floor(n || 1));
-    el.value = String(v);
-    return;
-  }
-
-  if (type === "number") {
-    if (el.value.trim() === "") return;
-    const safe = Math.max(0, n);
-    el.value = formatNumberBR(safe, 3);
-    return;
-  }
-}
-
-/* =========================
-   Render
-========================= */
-function renderItemsTable() {
-  if (statItems) statItems.textContent = String(state.items.length);
-  tbodyItens.innerHTML = "";
-
-  if (!state.items.length) {
-    tbodyItens.innerHTML = `
-      <tr class="empty">
-        <td colspan="5">
-          <div class="empty__box">
-            <strong>Nenhum insumo cadastrado.</strong>
-            <span>Cadastre o primeiro item acima para começar a montar sua base de custos.</span>
-          </div>
-        </td>
-      </tr>`;
-    return;
-  }
-
-  const query = normalizeNameKey(itemSearch ? itemSearch.value : "");
-  const visibleItems = query
-    ? state.items.filter((it) => normalizeNameKey(it.name).includes(query))
-    : state.items;
-
-  if (!visibleItems.length) {
-    tbodyItens.innerHTML = `
-      <tr class="empty">
-        <td colspan="5">
-          <div class="empty__box">
-            <strong>Nenhum insumo encontrado.</strong>
-            <span>Tente outro termo de busca.</span>
-          </div>
-        </td>
-      </tr>`;
-    return;
-  }
-
-  const rows = visibleItems
-    .map((it) => {
-      const unitBase = displayUnit(it.unitBuy);
-      const shownUnitCost = `${brl.format(it.unitCostBase)} / ${unitBase}`;
-      const isEditing = editingItemId === it.id;
-
-      if (!isEditing) {
-        return `
-          <tr data-row="item" data-id="${it.id}">
-            <td>
-              <div class="cell-title">
-                <strong>${escapeHtml(it.name)}</strong>
-                <span class="muted">Cálculo em ${unitBase}</span>
-              </div>
-            </td>
-            <td class="right">${brl.format(it.priceTotal)}</td>
-            <td class="right">${formatQty(it.qtyBought, it.unitBuy)}</td>
-            <td class="right"><span class="pill">${shownUnitCost}</span></td>
-            <td class="right">
-              <div class="row-actions">
-                <button class="icon-btn" type="button" data-action="edit-item" data-id="${it.id}" title="Editar item (Enter salva)">
-                  ✎
-                </button>
-                <button class="icon-btn icon-btn--danger" type="button" data-action="delete-item" data-id="${it.id}" title="Excluir item">
-                  🗑
-                </button>
-              </div>
-            </td>
-          </tr>`;
-      }
-
-      return `
-        <tr data-row="item-edit" data-id="${it.id}">
-          <td>
-            <div class="field" style="gap:6px;">
-              <label class="muted" style="font-size:12px;">Nome</label>
-              <input class="edit-input" data-edit="name" type="text" value="${escapeHtml(it.name)}" />
-            </div>
-          </td>
-          <td class="right">
-            <div class="field" style="gap:6px;">
-              <label class="muted" style="font-size:12px;">Preço (R$)</label>
-              <input class="edit-input" data-edit="price" inputmode="decimal" type="text" value="${formatMoneyInput(it.priceTotal)}" />
-            </div>
-          </td>
-          <td class="right">
-            <div class="field" style="gap:6px;">
-              <label class="muted" style="font-size:12px;">Qtd (${it.unitBuy})</label>
-              <input class="edit-input" data-edit="qty" inputmode="decimal" type="text" value="${formatNumberBR(it.qtyBought, 3)}" />
-            </div>
-          </td>
-          <td class="right"><span class="pill">${shownUnitCost}</span></td>
-          <td class="right">
-            <div class="row-actions">
-              <button class="icon-btn icon-btn--ok" type="button" data-action="save-item" data-id="${it.id}" title="Salvar alterações">
-                ✓
-              </button>
-              <button class="icon-btn" type="button" data-action="cancel-item" data-id="${it.id}" title="Cancelar edição (Esc)">
-                ↩
-              </button>
-            </div>
-          </td>
-        </tr>`;
-    })
-    .join("");
-
-  tbodyItens.innerHTML = rows;
-}
-
-function renderItemsSelect() {
-  const prev = usoItem.value;
-  usoItem.innerHTML = `<option value="" disabled ${prev ? "" : "selected"}>Selecione um item cadastrado</option>`;
-
-  state.items.forEach((it) => {
-    const opt = document.createElement("option");
-    opt.value = it.id;
-    opt.textContent = `${it.name} • ${brl.format(it.unitCostBase)} / ${displayUnit(it.unitBuy)}`;
-    usoItem.appendChild(opt);
+function openModal({ title, body, actions = [{ label: "Fechar", value: true, className: "btn btn--dark" }] }) {
+  lastFocused = document.activeElement;
+  els.modalTitle.textContent = title;
+  els.modalDesc.innerHTML = "";
+  els.modalActions.innerHTML = "";
+  if (typeof body === "string") { const p = document.createElement("p"); p.textContent = body; els.modalDesc.appendChild(p); }
+  else if (body instanceof Node) els.modalDesc.appendChild(body);
+  actions.forEach((a) => {
+    const b = document.createElement("button"); b.type = "button"; b.className = a.className || "btn btn--ghost"; b.textContent = a.label; b.addEventListener("click", () => closeModal(a.value)); els.modalActions.appendChild(b);
   });
+  els.modalRoot.hidden = false;
+  document.body.style.overflow = "hidden";
+  requestAnimationFrame(() => els.modalDialog.focus());
+  return new Promise((resolve) => { modalResolver = resolve; });
+}
+function closeModal(value = null) {
+  els.modalRoot.hidden = true; document.body.style.overflow = "";
+  const resolve = modalResolver; modalResolver = null;
+  if (lastFocused?.focus) requestAnimationFrame(() => lastFocused.focus());
+  if (resolve) resolve(value);
+}
+async function confirmModal(message, title = "Confirmar") {
+  return Boolean(await openModal({ title, body: message, actions: [{ label: "Cancelar", value: false, className: "btn btn--ghost" }, { label: "Confirmar", value: true, className: "btn btn--dark" }] }));
+}
+function showFieldError(input, message) {
+  const field = input.closest(".field"); if (field) field.classList.toggle("is-error", Boolean(message));
+  const err = input.id === "itemNome" ? $("itemNomeErr") : input.id === "itemPrecoTotal" ? $("itemPrecoErr") : input.id === "itemQtdCompra" ? $("itemQtdErr") : input.id === "usoItem" ? $("usoItemErr") : input.id === "usoQtd" ? $("usoQtdErr") : input.id === "feePercent" ? $("feeErr") : input.id === "margemLucro" ? $("margemErr") : null;
+  if (err) err.textContent = message || "";
+}
+function clearErrors() { document.querySelectorAll(".field.is-error").forEach((x) => x.classList.remove("is-error")); document.querySelectorAll(".error").forEach((x) => x.textContent = ""); }
 
-  if (prev && state.items.some((x) => x.id === prev)) usoItem.value = prev;
-  updateUsoHint();
+function getRecipeCost() { return state.recipe.reduce((sum, r) => sum + (Number(r.cost) || 0), 0); }
+function getPricing() {
+  const portions = Math.max(1, Math.floor(parseNumberBR(els.numPorcoes.value) || 1));
+  const extra = Math.max(0, parseNumberBR(els.taxaExtra.value));
+  const margin = clamp(parseNumberBR(els.margemLucro.value), 0, 90);
+  const sale = Math.max(0, parseNumberBR(els.precoVenda.value));
+  const feePercent = clamp(parseNumberBR(els.feePercent.value), 0, 95);
+  const appliedFeePercent = ["ifood", "marketplace"].includes(els.salesChannel.value) ? feePercent : 0;
+  return { portions, extra, margin, sale, feePercent, appliedFeePercent, channel: els.salesChannel.value };
+}
+function calculate() {
+  const p = getPricing();
+  const ingredientsTotal = getRecipeCost();
+  const ingredientsPer = ingredientsTotal / p.portions;
+  // "Outros custos" é informado por venda/unidade; não deve ser diluído pelo rendimento da receita.
+  const costPer = ingredientsPer + p.extra;
+  const costTotal = ingredientsTotal + (p.extra * p.portions);
+  const feeRate = p.appliedFeePercent / 100;
+  const profitRate = p.margin / 100;
+  const denominator = 1 - feeRate - profitRate;
+  const exactSuggested = costPer > 0 && denominator > 0 ? costPer / denominator : 0;
+  // Arredonda para cima em passos de R$ 0,10 para nunca reduzir a margem escolhida.
+  const suggested = exactSuggested > 0 ? Math.ceil((exactSuggested - 1e-9) * 10) / 10 : 0;
+  const feeValue = suggested * feeRate;
+  const netAfterFee = suggested - feeValue;
+  const profit = suggested - feeValue - costPer;
+  const breakEven = costPer > 0 && (1 - feeRate) > 0 ? costPer / (1 - feeRate) : 0;
+  const saleFee = p.sale * feeRate;
+  const saleProfit = p.sale > 0 ? p.sale - saleFee - costPer : 0;
+  const saleMargin = p.sale > 0 ? (saleProfit / p.sale) * 100 : 0;
+  return { ...p, ingredientsTotal, ingredientsPer, costTotal, costPer, exactSuggested, suggested, feeValue, netAfterFee, profit, breakEven, saleFee, saleProfit, saleMargin, valid: denominator > 0 };
 }
 
-function renderRecipeTable() {
-  if (statRecipe) statRecipe.textContent = String(state.recipe.length);
-  tbodyReceita.innerHTML = "";
+function channelName(channel) {
+  return channel === "ifood" ? "iFood" : channel === "marketplace" ? "marketplace" : channel === "whatsapp" ? "WhatsApp" : "balcão";
+}
+function renderChannel() {
+  const channel = els.salesChannel.value;
+  const hasFee = channel === "ifood" || channel === "marketplace";
+  els.feeField.hidden = !hasFee;
+  els.resultFeeRow.hidden = !hasFee;
+  els.feeLabel.textContent = channel === "ifood" ? "Taxa total do iFood" : "Taxa total do aplicativo";
+  els.resultFeeLabel.textContent = channel === "ifood" ? "Taxa do iFood" : "Taxa do aplicativo";
+  els.feeHelp.textContent = channel === "ifood" ? "Use a taxa total do seu plano/contrato. A ferramenta não presume uma taxa fixa." : "Informe a comissão percentual cobrada pelo aplicativo.";
+}
 
+function renderRecipeSelect() {
+  const selected = els.usoItem.value;
+  els.usoItem.innerHTML = '<option value="" disabled>Selecione um item cadastrado</option>' + state.items.map((it) => `<option value="${escapeHtml(it.id)}">${escapeHtml(it.name)} · ${brl.format(it.unitCostBase)}/${displayUnit(it.unitBuy)}</option>`).join("");
+  if (state.items.some((it) => it.id === selected)) els.usoItem.value = selected; else els.usoItem.value = "";
+  updateUsageUnit();
+}
+function updateUsageUnit() {
+  const it = state.items.find((x) => x.id === els.usoItem.value);
+  els.usoUnit.textContent = it ? displayUnit(it.unitBuy) : "g/ml/un";
+}
+
+function renderRecipe() {
   if (!state.recipe.length) {
-    tbodyReceita.innerHTML = `
-      <tr class="empty">
-        <td colspan="4">
-          <div class="empty__box">
-            <strong>Composição vazia.</strong>
-            <span>Adicione um insumo para começar a calcular o custo do produto.</span>
-          </div>
-        </td>
-      </tr>`;
+    els.recipeList.innerHTML = '<div class="empty-state">Nenhum ingrediente adicionado. Se ainda não cadastrou os preços de compra, abra “Gerenciar ingredientes e embalagens”.</div>';
     return;
   }
-
-  const rows = state.recipe
-    .map((r) => {
-      const it = state.items.find((x) => x.id === r.itemId);
-      const name = it ? it.name : "Item removido";
-      const unitBase = it ? displayUnit(it.unitBuy) : "-";
-      const isEditing = editingRecipeId === r.id;
-
-      if (!isEditing) {
-        return `
-          <tr data-row="recipe" data-id="${r.id}">
-            <td>
-              <div class="cell-title">
-                <strong>${escapeHtml(name)}</strong>
-                <span class="muted">${it ? `${brl.format(it.unitCostBase)} / ${unitBase}` : "—"}</span>
-              </div>
-            </td>
-            <td class="right">${it ? formatQty(r.qtyUsedBase, unitBase) : "—"}</td>
-            <td class="right"><strong>${brl.format(r.cost)}</strong></td>
-            <td class="right">
-              <div class="row-actions">
-                <button class="icon-btn" type="button" data-action="edit-recipe" data-id="${r.id}" title="Editar quantidade usada">
-                  ✎
-                </button>
-                <button class="icon-btn icon-btn--danger" type="button" data-action="delete-recipe" data-id="${r.id}" title="Remover da receita">
-                  🗑
-                </button>
-              </div>
-            </td>
-          </tr>`;
-      }
-
-      return `
-        <tr data-row="recipe-edit" data-id="${r.id}">
-          <td>
-            <div class="cell-title">
-              <strong>${escapeHtml(name)}</strong>
-              <span class="muted">${it ? `${brl.format(it.unitCostBase)} / ${unitBase}` : "—"}</span>
-            </div>
-          </td>
-          <td class="right">
-            <div class="field" style="gap:6px;">
-              <label class="muted" style="font-size:12px;">Qtd (${unitBase})</label>
-              <input class="edit-input" data-edit="qty" inputmode="decimal" type="text" value="${formatNumberBR(r.qtyUsedBase, 3)}" />
-            </div>
-          </td>
-          <td class="right"><strong>${brl.format(r.cost)}</strong></td>
-          <td class="right">
-            <div class="row-actions">
-              <button class="icon-btn icon-btn--ok" type="button" data-action="save-recipe" data-id="${r.id}" title="Salvar">
-                ✓
-              </button>
-              <button class="icon-btn" type="button" data-action="cancel-recipe" data-id="${r.id}" title="Cancelar (Esc)">
-                ↩
-              </button>
-            </div>
-          </td>
-        </tr>`;
-    })
-    .join("");
-
-  tbodyReceita.innerHTML = rows;
-}
-
-function renderModelsTable() {
-  if (statModels) statModels.textContent = String(state.models.length);
-  tbodyModels.innerHTML = "";
-
-  if (!state.models.length) {
-    tbodyModels.innerHTML = `
-      <tr class="empty">
-        <td colspan="3">
-          <div class="empty__box">
-            <strong>Nenhum modelo salvo.</strong>
-            <span>Monte uma receita e clique em “Salvar modelo”.</span>
-          </div>
-        </td>
-      </tr>`;
-    return;
-  }
-
-  const rows = [...state.models]
-    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
-    .map((m) => {
-      const d = new Date(m.createdAt || Date.now());
-      const when = d.toLocaleDateString("pt-BR");
-      return `
-        <tr data-row="model" data-id="${m.id}">
-          <td>
-            <div class="cell-title">
-              <strong>${escapeHtml(m.name)}</strong>
-              <span class="muted">${m.recipe.length} item(ns) • ${m.pricing.portions} porção(ões) • ${m.pricing.method === "margin" ? "margem" : "markup"} ${m.pricing.margin}%</span>
-            </div>
-          </td>
-          <td class="right">${escapeHtml(when)}</td>
-          <td class="right">
-            <div class="row-actions">
-              <button class="icon-btn icon-btn--ok" type="button" data-action="load-model" data-id="${m.id}" title="Carregar modelo">
-                ⤓
-              </button>
-              <button class="icon-btn" type="button" data-action="duplicate-model" data-id="${m.id}" title="Duplicar modelo">
-                ⎘
-              </button>
-              <button class="icon-btn icon-btn--danger" type="button" data-action="delete-model" data-id="${m.id}" title="Excluir modelo">
-                🗑
-              </button>
-            </div>
-          </td>
-        </tr>`;
-    })
-    .join("");
-
-  tbodyModels.innerHTML = rows;
-}
-
-function renderKPIs() {
-  const totalBase = state.recipe.reduce((acc, r) => acc + (r.cost || 0), 0);
-  const { portions, margin, extra, sale, method, feePercent: fee } = validatePricingInputs();
-
-  const costWithExtra = totalBase + extra;
-  const costPer = costWithExtra / portions;
-  const feeRate = fee / 100;
-  const netFactor = Math.max(0.001, 1 - feeRate);
-
-  let suggested = 0;
-  if (costPer > 0) {
-    if (method === "margin") {
-      const targetMarginRate = margin / 100;
-      const divisor = 1 - feeRate - targetMarginRate;
-      suggested = divisor > 0 ? costPer / divisor : 0;
-    } else {
-      const targetAfterFee = costPer * (1 + margin / 100);
-      suggested = targetAfterFee / netFactor;
-    }
-  }
-
-  const suggestedFee = suggested * feeRate;
-  const profitSuggested = suggested > 0 ? suggested - suggestedFee - costPer : 0;
-  const suggestedMargin = suggested > 0 ? (profitSuggested / suggested) * 100 : 0;
-  const breakEven = costPer > 0 ? costPer / netFactor : 0;
-  const referencePrice = sale > 0 ? sale : suggested;
-  const foodCost = referencePrice > 0 ? (costPer / referencePrice) * 100 : 0;
-
-  kpiCustoTotal.textContent = brl.format(costWithExtra);
-  kpiCustoPorcao.textContent = brl.format(costPer);
-  kpiPrecoSugerido.textContent = brl.format(suggested);
-  kpiLucroEstimado.textContent = brl.format(profitSuggested);
-  resultSuggested.textContent = brl.format(suggested);
-  kpiBreakEven.textContent = brl.format(breakEven);
-  kpiFeeEstimated.textContent = brl.format(suggestedFee);
-  kpiSuggestedMargin.textContent = `${formatNumberBR(suggestedMargin, 2)}%`;
-  kpiFoodCost.textContent = `${formatNumberBR(foodCost, 2)}%`;
-
-  if (method === "margin") {
-    margemLabel.textContent = "Margem desejada sobre venda (%)";
-    margemHelp.textContent = "Percentual do preço que deve permanecer como lucro.";
-    methodHelp.textContent = "Margem: calcula o preço para atingir um lucro percentual sobre a venda.";
-    resultMethod.textContent = `Margem-alvo ${formatNumberBR(margin, 2)}% • taxa ${formatNumberBR(fee, 2)}%`;
-  } else {
-    margemLabel.textContent = "Acréscimo desejado (%)";
-    margemHelp.textContent = "Ex.: 70 = custo + 70%, antes da taxa sobre a venda.";
-    methodHelp.textContent = "Markup: aplica um acréscimo sobre o custo e compensa a taxa percentual.";
-    resultMethod.textContent = `Markup ${formatNumberBR(margin, 2)}% • taxa ${formatNumberBR(fee, 2)}%`;
-  }
-
-  kpiDetalhe.textContent = state.recipe.length
-    ? `${portions} porção(ões) • taxa ${formatNumberBR(fee, 2)}%`
-    : "Monte a composição para calcular";
-
-  if (sale > 0) {
-    const realFee = sale * feeRate;
-    const realProfit = sale - realFee - costPer;
-    const realMargin = (realProfit / sale) * 100;
-
-    boxLucroReal.hidden = false;
-    kpiLucroReal.textContent = brl.format(realProfit);
-    kpiMargemReal.textContent = `${formatNumberBR(realMargin, 2)}%`;
-
-    if (costPer <= 0) {
-      pricingHealth.dataset.status = "neutral";
-      pricingHealthText.textContent = "Aguardando composição";
-    } else if (sale < breakEven) {
-      pricingHealth.dataset.status = "bad";
-      pricingHealthText.textContent = "Preço abaixo do custo";
-    } else if (suggested > 0 && sale < suggested * 0.98) {
-      pricingHealth.dataset.status = "warn";
-      pricingHealthText.textContent = "Preço abaixo do sugerido";
-    } else {
-      pricingHealth.dataset.status = "good";
-      pricingHealthText.textContent = "Preço em faixa saudável";
-    }
-  } else {
-    boxLucroReal.hidden = true;
-    kpiLucroReal.textContent = brl.format(0);
-    kpiMargemReal.textContent = "0%";
-    pricingHealth.dataset.status = state.recipe.length ? "good" : "neutral";
-    pricingHealthText.textContent = state.recipe.length ? "Preço sugerido calculado" : "Aguardando composição";
-  }
-
-  if (method === "margin" && margin + fee >= 100) {
-    pricingHealth.dataset.status = "bad";
-    pricingHealthText.textContent = "Margem + taxa inválidas";
-  }
-
-  state.pricing.portions = portions;
-  state.pricing.margin = margin;
-  state.pricing.extra = extra;
-  state.pricing.sale = sale;
-  state.pricing.method = method;
-  state.pricing.feePercent = fee;
-
-  renderBreakdown(totalBase);
-  save();
-}
-
-function renderBreakdown(totalBase) {
-  breakdownList.innerHTML = "";
-
-  if (!state.recipe.length || totalBase <= 0) {
-    const empty = document.createElement("div");
-    empty.className = "breakdown__empty muted";
-    empty.textContent = "Adicione itens na receita para ver a distribuição.";
-    breakdownList.appendChild(empty);
-    return;
-  }
-
-  // agrupa por itemId
-  const byItem = new Map();
-  for (const r of state.recipe) {
-    const prev = byItem.get(r.itemId) || 0;
-    byItem.set(r.itemId, prev + (r.cost || 0));
-  }
-
-  const items = [...byItem.entries()]
-    .map(([itemId, cost]) => {
-      const it = state.items.find((x) => x.id === itemId);
-      return {
-        itemId,
-        name: it ? it.name : "Item removido",
-        cost,
-        pct: (cost / totalBase) * 100,
-      };
-    })
-    .sort((a, b) => b.cost - a.cost);
-
-  items.forEach((x) => {
-    const row = document.createElement("div");
-    row.className = "b-item";
-    row.setAttribute("role", "listitem");
-
-    const top = document.createElement("div");
-    top.className = "b-item__row";
-
-    const left = document.createElement("div");
-    left.className = "b-item__name";
-    left.textContent = x.name;
-
-    const right = document.createElement("div");
-    right.className = "b-item__meta";
-    right.textContent = `${brl.format(x.cost)} • ${formatNumberBR(x.pct, 2)}%`;
-
-    top.appendChild(left);
-    top.appendChild(right);
-
-    const bar = document.createElement("div");
-    bar.className = "b-bar";
-
-    const fill = document.createElement("div");
-    fill.className = "b-bar__fill";
-    fill.style.width = `${clamp(x.pct, 0, 100)}%`;
-
-    bar.appendChild(fill);
-
-    row.appendChild(top);
-    row.appendChild(bar);
-
-    breakdownList.appendChild(row);
-  });
-}
-
-function updateUsoHint() {
-  const it = state.items.find((x) => x.id === usoItem.value);
-  if (!it) {
-    usoHint.textContent = "A unidade será a mesma do item (ex.: g, ml, un).";
-    return;
-  }
-  usoHint.textContent = `Informe a quantidade em ${displayUnit(it.unitBuy)} (base de cálculo).`;
-}
-
-function renderAll() {
-  renderItemsTable();
-  renderItemsSelect();
-  renderRecipeTable();
-  renderModelsTable();
-
-  numPorcoes.value = String(state.pricing.portions ?? 1);
-  margemLucro.value = String(state.pricing.margin ?? 70);
-  taxaExtra.value = formatMoneyInput(Number(state.pricing.extra ?? 0));
-  precoVenda.value = state.pricing.sale ? formatMoneyInput(Number(state.pricing.sale)) : "";
-  pricingMethod.value = state.pricing.method === "margin" ? "margin" : "markup";
-  feePercent.value = formatNumberBR(Number(state.pricing.feePercent ?? 0), 2);
-
-  statItems.textContent = String(state.items.length);
-  statRecipe.textContent = String(state.recipe.length);
-  statModels.textContent = String(state.models.length);
-
-  renderKPIs();
-}
-
-/* =========================
-   Receita Modelo (8 + 10)
-========================= */
-function getUsedItemsSnapshot() {
-  const used = new Set(state.recipe.map((r) => r.itemId));
-  const snapshot = state.items
-    .filter((i) => used.has(i.id))
-    .map((i) => ({
-      name: i.name,
-      unitBuy: i.unitBuy,
-      priceTotal: i.priceTotal,
-      qtyBought: i.qtyBought,
-      unitCostBase: i.unitCostBase,
-    }));
-
-  return snapshot;
-}
-
-function buildModelRecipeSnapshot(itemsSnapshot) {
-  const keyFor = (name, unitBuy) => `${normalizeNameKey(name)}|${unitBuy}`;
-  const map = new Map(itemsSnapshot.map((i) => [keyFor(i.name, i.unitBuy), i]));
-
-  // Se houver múltiplos itens iguais (mesmo nome/unidade), ainda funciona por chave
-  return state.recipe
-    .map((r) => {
-      const it = state.items.find((x) => x.id === r.itemId);
-      if (!it) return null;
-      const key = keyFor(it.name, it.unitBuy);
-      if (!map.has(key)) return null;
-      return { itemKey: key, qtyUsedBase: r.qtyUsedBase };
-    })
-    .filter(Boolean);
-}
-
-function saveCurrentAsModel(name) {
-  const cleanName = String(name || "").trim();
-  if (!cleanName) return false;
-
-  if (!state.recipe.length) return false;
-
-  const itemsSnap = getUsedItemsSnapshot();
-  const recipeSnap = buildModelRecipeSnapshot(itemsSnap);
-
-  const m = {
-    id: uid(),
-    name: cleanName,
-    createdAt: Date.now(),
-    items: itemsSnap,
-    recipe: recipeSnap,
-    pricing: { ...state.pricing },
-  };
-
-  state.models.unshift(m);
-  save();
-  renderModelsTable();
-  return true;
-}
-
-function loadModel(modelId) {
-  const m = state.models.find((x) => x.id === modelId);
-  if (!m) return;
-
-  const keyFor = (name, unitBuy) => `${normalizeNameKey(name)}|${unitBuy}`;
-
-  // garante itens existentes (sem sobrescrever os atuais)
-  const mapKeyToItemId = new Map();
-
-  m.items.forEach((snap) => {
-    const key = keyFor(snap.name, snap.unitBuy);
-
-    const existing = state.items.find(
-      (it) => normalizeNameKey(it.name) === normalizeNameKey(snap.name) && it.unitBuy === snap.unitBuy
-    );
-
-    if (existing) {
-      mapKeyToItemId.set(key, existing.id);
-      return;
-    }
-
-    const newId = uid();
-    state.items.unshift({
-      id: newId,
-      name: snap.name,
-      unitBuy: snap.unitBuy,
-      priceTotal: snap.priceTotal,
-      qtyBought: snap.qtyBought,
-      unitCostBase: snap.unitCostBase,
-    });
-
-    mapKeyToItemId.set(key, newId);
-  });
-
-  // monta receita
-  state.recipe = m.recipe
-    .map((r) => {
-      const itemId = mapKeyToItemId.get(r.itemKey);
-      if (!itemId) return null;
-      const it = state.items.find((x) => x.id === itemId);
-      if (!it) return null;
-
-      const qtyUsedBase = Math.max(0, Number(r.qtyUsedBase) || 0);
-      if (qtyUsedBase <= 0) return null;
-
-      return {
-        id: uid(),
-        itemId,
-        qtyUsedBase,
-        cost: qtyUsedBase * it.unitCostBase,
-      };
-    })
-    .filter(Boolean);
-
-  // aplica pricing
-  state.pricing = {
-    portions: Math.max(1, Math.floor(Number(m.pricing.portions) || 1)),
-    margin: Math.max(0, Number(m.pricing.margin) || 0),
-    extra: Math.max(0, Number(m.pricing.extra) || 0),
-    sale: Math.max(0, Number(m.pricing.sale) || 0),
-    method: m.pricing.method === "margin" ? "margin" : "markup",
-    feePercent: clamp(Number(m.pricing.feePercent) || 0, 0, 99.9),
-  };
-
-  editingItemId = null;
-  editingRecipeId = null;
-
-  save();
-  renderAll();
-}
-
-/* =========================
-   Export JSON / CSV (7)
-========================= */
-function exportJSON() {
-  const data = JSON.stringify(state, null, 2);
-  const blob = new Blob([data], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "receita-custos.json";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-
-  URL.revokeObjectURL(url);
-}
-
-function csvEscape(value) {
-  const s = String(value ?? "");
-  if (/[;"\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-  return s;
-}
-
-function exportCSV() {
-  const { portions, margin, extra, sale, method, feePercent: fee } = validatePricingInputs();
-  const totalBase = state.recipe.reduce((acc, r) => acc + (r.cost || 0), 0);
-  const total = totalBase + extra;
-  const costPer = total / portions;
-  const feeRate = fee / 100;
-  const netFactor = Math.max(0.001, 1 - feeRate);
-  const suggested = method === "margin"
-    ? ((1 - feeRate - margin / 100) > 0 ? costPer / (1 - feeRate - margin / 100) : 0)
-    : (costPer * (1 + margin / 100)) / netFactor;
-
-  // agrupa receita por item
-  const byItem = new Map();
-  for (const r of state.recipe) {
-    const prev = byItem.get(r.itemId) || { qty: 0, cost: 0 };
-    byItem.set(r.itemId, { qty: prev.qty + r.qtyUsedBase, cost: prev.cost + r.cost });
-  }
-
-  const lines = [];
-
-  // Cabeçalho
-  lines.push(["SEÇÃO", "CAMPO", "VALOR"].map(csvEscape).join(";"));
-  lines.push(["Resumo", "Custo base (R$)", totalBase.toFixed(2)].map(csvEscape).join(";"));
-  lines.push(["Resumo", "Extras (R$)", extra.toFixed(2)].map(csvEscape).join(";"));
-  lines.push(["Resumo", "Custo total (R$)", total.toFixed(2)].map(csvEscape).join(";"));
-  lines.push(["Resumo", "Porções", portions].map(csvEscape).join(";"));
-  lines.push(["Resumo", "Custo por porção (R$)", costPer.toFixed(2)].map(csvEscape).join(";"));
-  lines.push(["Resumo", "Método", method === "margin" ? "Margem sobre venda" : "Markup sobre custo"].map(csvEscape).join(";"));
-  lines.push(["Resumo", method === "margin" ? "Margem-alvo (%)" : "Markup (%)", margin].map(csvEscape).join(";"));
-  lines.push(["Resumo", "Taxa sobre venda (%)", fee].map(csvEscape).join(";"));
-  lines.push(["Resumo", "Preço sugerido (R$)", suggested.toFixed(2)].map(csvEscape).join(";"));
-  lines.push(["Resumo", "Preço praticado (R$)", sale ? sale.toFixed(2) : ""].map(csvEscape).join(";"));
-  lines.push("");
-
-  // Itens cadastrados
-  lines.push(["SEÇÃO", "ITEM", "UNIDADE COMPRA", "PREÇO PAGO (R$)", "QTD COMPRADA", "CUSTO POR BASE (R$/g|ml|un)"].map(csvEscape).join(";"));
-  state.items.forEach((it) => {
-    lines.push([
-      "Itens",
-      it.name,
-      it.unitBuy,
-      it.priceTotal.toFixed(2),
-      it.qtyBought,
-      it.unitCostBase.toFixed(6),
-    ].map(csvEscape).join(";"));
-  });
-  lines.push("");
-
-  // Receita
-  lines.push(["SEÇÃO", "ITEM", "QTD USADA (BASE)", "UNIDADE BASE", "CUSTO (R$)"].map(csvEscape).join(";"));
-  [...byItem.entries()].forEach(([itemId, v]) => {
-    const it = state.items.find((x) => x.id === itemId);
-    const name = it ? it.name : "Item removido";
-    const unitBase = it ? displayUnit(it.unitBuy) : "-";
-    lines.push([
-      "Receita",
-      name,
-      v.qty,
-      unitBase,
-      v.cost.toFixed(2),
-    ].map(csvEscape).join(";"));
-  });
-
-  const csv = lines.join("\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "custos-receita.csv";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-
-  URL.revokeObjectURL(url);
-}
-
-/* =========================
-   Ajuda (18) + Atalhos (14)
-========================= */
-function openHelp() {
-  const wrap = document.createElement("div");
-  wrap.className = "help-grid";
-
-  const steps = [
-    ["Cadastre seus itens", "Informe nome, unidade de compra, preço pago e quantidade comprada. O sistema calcula o custo por g/ml/un automaticamente."],
-    ["Monte a receita", "Selecione um item e informe a quantidade usada na unidade base (g/ml/un)."],
-    ["Escolha o método", "Use markup quando quiser acrescentar um percentual sobre o custo ou margem sobre venda quando quiser definir quanto do preço final deve permanecer como lucro."],
-    ["Inclua taxas", "Informe custos extras da receita e taxas percentuais cobradas sobre a venda, como marketplace, cartão ou gateway."],
-    ["Compare o preço praticado", "Preencha o preço que você já cobra para ver lucro real, margem, food cost e se está abaixo do ponto de equilíbrio ou do preço sugerido."],
-    ["Salve modelos", "Depois de montar uma receita, salve como modelo (Açaí 500ml, 700ml, 1L) para recarregar em segundos."],
-  ];
-
-  steps.forEach(([t, d]) => {
-    const box = document.createElement("div");
-    box.className = "help-step";
-    const strong = document.createElement("strong");
-    strong.textContent = t;
-    const span = document.createElement("span");
-    span.textContent = d;
-    box.appendChild(strong);
-    box.appendChild(span);
-    wrap.appendChild(box);
-  });
-
-  openModal({
-    title: "Como usar",
-    body: wrap,
-    actions: [{ label: "Fechar", value: true, className: "btn btn--primary" }],
-  });
-}
-
-document.addEventListener("keydown", (e) => {
-  // Alt+1 = foco no nome do item, Alt+2 = foco no select da receita, Alt+3 = foco na quantidade usada, Alt+H = ajuda
-  if (e.altKey && !e.ctrlKey && !e.metaKey) {
-    const k = e.key.toLowerCase();
-    if (k === "1") {
-      e.preventDefault();
-      itemNome.focus();
-    }
-    if (k === "2") {
-      e.preventDefault();
-      usoItem.focus();
-    }
-    if (k === "3") {
-      e.preventDefault();
-      usoQtd.focus();
-    }
-    if (k === "h") {
-      e.preventDefault();
-      openHelp();
-    }
-  }
-});
-
-/* =========================
-   Events
-========================= */
-formItem.addEventListener("submit", (e) => {
-  e.preventDefault();
-
-  if (!validateItemForm()) return;
-
-  const name = itemNome.value.trim();
-  const unitBuy = itemUnidadeCompra.value;
-  const priceTotal = Math.max(0, parseNumberBR(itemPrecoTotal.value));
-  const qtyBought = Math.max(0, parseNumberBR(itemQtdCompra.value));
-
-  const unitCostBase = calcUnitCostBRL(priceTotal, qtyBought, unitBuy);
-
-  state.items.unshift({
-    id: uid(),
-    name,
-    unitBuy,
-    priceTotal,
-    qtyBought,
-    unitCostBase,
-  });
-
-  itemNome.value = "";
-  itemPrecoTotal.value = "";
-  itemQtdCompra.value = "";
-  itemNome.focus();
-
-  save();
-  renderAll();
-});
-
-tbodyItens.addEventListener("click", async (e) => {
-  const btn = e.target.closest("button[data-action]");
-  if (!btn) return;
-
-  const action = btn.getAttribute("data-action");
-  const id = btn.getAttribute("data-id");
-  const it = state.items.find((x) => x.id === id);
-  if (!it) return;
-
-  if (action === "delete-item") {
-    const ok = await modalConfirm(`Excluir o item “${it.name}”? Isso também remove esse item da receita.`, "Excluir item");
-    if (!ok) return;
-
-    state.items = state.items.filter((x) => x.id !== id);
-    state.recipe = state.recipe.filter((r) => r.itemId !== id);
-
-    editingItemId = null;
-    save();
-    renderAll();
-    return;
-  }
-
-  if (action === "edit-item") {
-    editingItemId = id;
-    editingRecipeId = null;
-    renderAll();
-
-    // foca primeiro input da linha
-    requestAnimationFrame(() => {
-      const row = tbodyItens.querySelector(`tr[data-row="item-edit"][data-id="${id}"]`);
-      const first = row ? row.querySelector('input[data-edit="name"]') : null;
-      if (first) first.focus();
-    });
-    return;
-  }
-
-  if (action === "cancel-item") {
-    editingItemId = null;
-    renderAll();
-    return;
-  }
-
-  if (action === "save-item") {
-    const row = tbodyItens.querySelector(`tr[data-row="item-edit"][data-id="${id}"]`);
-    if (!row) return;
-
-    const nameEl = row.querySelector('input[data-edit="name"]');
-    const priceEl = row.querySelector('input[data-edit="price"]');
-    const qtyEl = row.querySelector('input[data-edit="qty"]');
-
-    const name = String(nameEl.value || "").trim();
-    const priceTotal = Math.max(0, parseNumberBR(priceEl.value));
-    const qtyBought = Math.max(0, parseNumberBR(qtyEl.value));
-
-    if (!name || name.length < 2) {
-      await modalAlert("Informe um nome válido (mínimo 2 caracteres).", "Edição de item");
-      nameEl.focus();
-      return;
-    }
-    if (!(priceTotal > 0)) {
-      await modalAlert("Informe um preço maior que zero.", "Edição de item");
-      priceEl.focus();
-      return;
-    }
-    if (!(qtyBought > 0)) {
-      await modalAlert("Informe uma quantidade maior que zero.", "Edição de item");
-      qtyEl.focus();
-      return;
-    }
-
-    it.name = name;
-    it.priceTotal = priceTotal;
-    it.qtyBought = qtyBought;
-    it.unitCostBase = calcUnitCostBRL(priceTotal, qtyBought, it.unitBuy);
-
-    // recalcula custos da receita desse item
-    state.recipe.forEach((r) => {
-      if (r.itemId === it.id) r.cost = r.qtyUsedBase * it.unitCostBase;
-    });
-
-    editingItemId = null;
-    save();
-    renderAll();
-  }
-});
-
-usoItem.addEventListener("change", updateUsoHint);
-
-formUso.addEventListener("submit", (e) => {
-  e.preventDefault();
-
-  if (!validateRecipeForm()) return;
-
-  const itemId = usoItem.value;
-  const it = state.items.find((x) => x.id === itemId);
-  if (!it) return;
-
-  const qtyUsedBase = Math.max(0, parseNumberBR(usoQtd.value));
-  const cost = qtyUsedBase * it.unitCostBase;
-
-  state.recipe.unshift({
-    id: uid(),
-    itemId,
-    qtyUsedBase,
-    cost,
-  });
-
-  usoQtd.value = "";
-  usoQtd.focus();
-
-  save();
-  renderAll();
-});
-
-tbodyReceita.addEventListener("click", async (e) => {
-  const btn = e.target.closest("button[data-action]");
-  if (!btn) return;
-
-  const action = btn.getAttribute("data-action");
-  const id = btn.getAttribute("data-id");
-
-  const r = state.recipe.find((x) => x.id === id);
-  if (!r) return;
-
-  if (action === "delete-recipe") {
-    const ok = await modalConfirm("Remover este item da receita?", "Remover item");
-    if (!ok) return;
-
-    state.recipe = state.recipe.filter((x) => x.id !== id);
-    editingRecipeId = null;
-    save();
-    renderAll();
-    return;
-  }
-
-  if (action === "edit-recipe") {
-    editingRecipeId = id;
-    editingItemId = null;
-    renderAll();
-    requestAnimationFrame(() => {
-      const row = tbodyReceita.querySelector(`tr[data-row="recipe-edit"][data-id="${id}"]`);
-      const first = row ? row.querySelector('input[data-edit="qty"]') : null;
-      if (first) first.focus();
-    });
-    return;
-  }
-
-  if (action === "cancel-recipe") {
-    editingRecipeId = null;
-    renderAll();
-    return;
-  }
-
-  if (action === "save-recipe") {
-    const row = tbodyReceita.querySelector(`tr[data-row="recipe-edit"][data-id="${id}"]`);
-    if (!row) return;
-
-    const qtyEl = row.querySelector('input[data-edit="qty"]');
-    const qtyUsedBase = Math.max(0, parseNumberBR(qtyEl.value));
-
-    if (!(qtyUsedBase > 0)) {
-      await modalAlert("Informe uma quantidade maior que zero.", "Edição da receita");
-      qtyEl.focus();
-      return;
-    }
-
+  els.recipeList.innerHTML = state.recipe.map((r) => {
     const it = state.items.find((x) => x.id === r.itemId);
-    if (!it) {
-      await modalAlert("Este item não existe mais. Remova e adicione novamente.", "Edição da receita");
-      editingRecipeId = null;
-      renderAll();
-      return;
+    if (!it) return "";
+    if (editingRecipeId === r.id) {
+      return `<div class="recipe-row" data-recipe-id="${r.id}"><div class="recipe-row__main"><strong>${escapeHtml(it.name)}</strong><small>Editando quantidade em ${displayUnit(it.unitBuy)}</small></div><input class="edit-qty" data-edit-recipe="${r.id}" value="${formatNumber(r.qtyUsedBase, 3)}" inputmode="decimal" style="width:110px;height:36px"/><div class="row-actions"><button class="icon-btn" data-action="save-recipe" data-id="${r.id}" title="Salvar">✓</button><button class="icon-btn" data-action="cancel-recipe" data-id="${r.id}" title="Cancelar">×</button></div></div>`;
     }
+    return `<div class="recipe-row"><div class="recipe-row__main"><strong>${escapeHtml(it.name)}</strong><small>${formatNumber(r.qtyUsedBase, 3)} ${displayUnit(it.unitBuy)}</small></div><strong class="recipe-row__cost">${brl.format(r.cost)}</strong><div class="row-actions"><button class="icon-btn" data-action="edit-recipe" data-id="${r.id}" title="Editar">✎</button><button class="icon-btn icon-btn--danger" data-action="delete-recipe" data-id="${r.id}" title="Remover">×</button></div></div>`;
+  }).join("");
+}
 
-    r.qtyUsedBase = qtyUsedBase;
-    r.cost = qtyUsedBase * it.unitCostBase;
+function renderIngredients() {
+  els.itemCount.textContent = `${state.items.length} ${state.items.length === 1 ? "item" : "itens"}`;
+  if (!state.items.length) {
+    els.ingredientList.innerHTML = '<div class="empty-state">Cadastre seu primeiro ingrediente informando quanto pagou e quanto comprou.</div>';
+    return;
+  }
+  els.ingredientList.innerHTML = state.items.map((it) => {
+    if (editingItemId === it.id) {
+      return `<div class="ingredient-row" data-item-id="${it.id}" style="align-items:flex-end;flex-wrap:wrap"><div class="field" style="flex:2;min-width:160px"><label>Nome</label><input data-edit="name" value="${escapeHtml(it.name)}" style="height:36px"/></div><div class="field" style="width:100px"><label>Preço</label><input data-edit="price" value="${formatMoneyInput(it.priceTotal)}" style="height:36px"/></div><div class="field" style="width:100px"><label>Qtd.</label><input data-edit="qty" value="${formatNumber(it.qtyBought,3)}" style="height:36px"/></div><div class="field" style="width:100px"><label>Unidade</label><select data-edit="unit" style="height:36px"><option value="kg" ${it.unitBuy === "kg" ? "selected" : ""}>kg</option><option value="g" ${it.unitBuy === "g" ? "selected" : ""}>g</option><option value="l" ${it.unitBuy === "l" ? "selected" : ""}>L</option><option value="ml" ${it.unitBuy === "ml" ? "selected" : ""}>ml</option><option value="un" ${it.unitBuy === "un" ? "selected" : ""}>un</option></select></div><div class="row-actions"><button class="icon-btn" data-action="save-item" data-id="${it.id}" title="Salvar">✓</button><button class="icon-btn" data-action="cancel-item" data-id="${it.id}" title="Cancelar">×</button></div></div>`;
+    }
+    return `<div class="ingredient-row"><div class="ingredient-row__main"><strong>${escapeHtml(it.name)}</strong><small>${brl.format(it.priceTotal)} por ${formatNumber(it.qtyBought,3)} ${it.unitBuy}</small></div><div class="ingredient-row__price"><strong>${brl.format(it.unitCostBase)}/${displayUnit(it.unitBuy)}</strong><small>custo unitário</small></div><div class="row-actions"><button class="icon-btn" data-action="edit-item" data-id="${it.id}" title="Editar">✎</button><button class="icon-btn icon-btn--danger" data-action="delete-item" data-id="${it.id}" title="Excluir">×</button></div></div>`;
+  }).join("");
+}
 
-    editingRecipeId = null;
-    save();
-    renderAll();
+function renderPricing() {
+  renderChannel();
+  const c = calculate();
+  const hasRecipe = state.recipe.length > 0 && c.costPer > 0;
+
+  els.summaryCost.textContent = brl.format(c.costPer);
+  els.summaryPrice.textContent = brl.format(c.suggested);
+  els.summaryProfit.textContent = brl.format(Math.max(0, c.profit));
+  els.kpiCustoTotal.textContent = brl.format(c.ingredientsTotal);
+  els.costTotalHelp.textContent = c.portions > 1 ? `Ingredientes e embalagens da receita inteira · ${brl.format(c.ingredientsPer)} por unidade` : "Soma dos ingredientes e embalagens desta receita";
+
+  els.resultSuggested.textContent = brl.format(c.suggested);
+  els.resultCost.textContent = brl.format(c.costPer);
+  els.resultFee.textContent = brl.format(c.feeValue);
+  els.resultNet.textContent = brl.format(c.netAfterFee);
+  els.resultProfit.textContent = brl.format(Math.max(0, c.profit));
+  els.breakEvenPrice.textContent = brl.format(c.breakEven);
+  els.detailIngredients.textContent = brl.format(c.ingredientsPer);
+  els.detailExtra.textContent = brl.format(c.extra / c.portions);
+  els.detailFeePercent.textContent = `${formatNumber(c.appliedFeePercent, 2)}%`;
+  els.detailProfitPercent.textContent = `${formatNumber(c.margin, 2)}%`;
+
+  if (!hasRecipe) {
+    els.priceStatus.dataset.status = "neutral"; els.priceStatus.textContent = "Aguardando produto";
+    els.resultSubtitle.textContent = "Monte o produto para começar.";
+  } else if (!c.valid) {
+    els.priceStatus.dataset.status = "bad"; els.priceStatus.textContent = "Revise os percentuais";
+    els.resultSubtitle.textContent = "A taxa do canal + lucro desejado precisam somar menos de 100%.";
+  } else {
+    els.priceStatus.dataset.status = "good"; els.priceStatus.textContent = "Preço calculado";
+    els.resultSubtitle.textContent = c.appliedFeePercent > 0 ? `Já considerando ${formatNumber(c.appliedFeePercent,2)}% de taxa do ${channelName(c.channel)} e ${formatNumber(c.margin,2)}% de lucro.` : `Considerando ${formatNumber(c.margin,2)}% de lucro por venda.`;
+  }
+
+  if (c.sale > 0 && hasRecipe) {
+    els.currentPriceAnalysis.hidden = false;
+    els.currentProfit.textContent = brl.format(c.saleProfit);
+    els.currentMargin.textContent = `${formatNumber(c.saleMargin, 1)}%`;
+    let status = "good", icon = "✓", title = "Seu preço está saudável", text = `Nesse valor, aproximadamente ${brl.format(c.saleProfit)} ficam como lucro por venda.`;
+    if (c.sale < c.breakEven - 0.005) { status = "bad"; icon = "!"; title = "Você perde dinheiro nesse preço"; text = `Para cobrir custos e taxas, o mínimo seria aproximadamente ${brl.format(c.breakEven)}.`; }
+    else if (c.sale < c.suggested - 0.005) { status = "warn"; icon = "!"; title = "Seu preço está abaixo do sugerido"; text = `Ele cobre os custos, mas entrega menos lucro que os ${formatNumber(c.margin,1)}% escolhidos.`; }
+    els.currentPriceAnalysis.dataset.status = status; els.currentAnalysisIcon.textContent = icon; els.currentAnalysisTitle.textContent = title; els.currentAnalysisText.textContent = text;
+  } else {
+    els.currentPriceAnalysis.hidden = true;
+  }
+
+  state.pricing = { portions: c.portions, margin: c.margin, extra: c.extra, sale: c.sale, feePercent: c.feePercent, channel: c.channel };
+  state.productName = els.productName.value.trim();
+  updateProfitPresets();
+  save();
+}
+
+function renderModels() {
+  if (!state.models.length) { els.modelsList.innerHTML = '<div class="empty-state">Nenhum produto salvo ainda.</div>'; return; }
+  els.modelsList.innerHTML = state.models.map((m) => `<div class="model-row"><div class="model-row__main"><strong>${escapeHtml(m.name)}</strong><small>${m.recipe.length} ${m.recipe.length === 1 ? "item" : "itens"} na composição · ${channelName(m.pricing?.channel || "counter")}</small></div><span class="model-row__meta">${dateLabel(m.createdAt)}</span><div class="row-actions"><button class="btn btn--ghost btn--small" data-action="load-model" data-id="${m.id}">Abrir</button><button class="icon-btn icon-btn--danger" data-action="delete-model" data-id="${m.id}" title="Excluir">×</button></div></div>`).join("");
+}
+
+function renderInputsFromState() {
+  els.productName.value = state.productName || "";
+  els.numPorcoes.value = String(state.pricing.portions || 1);
+  els.margemLucro.value = formatNumber(state.pricing.margin ?? 20, 2);
+  els.taxaExtra.value = formatMoneyInput(state.pricing.extra || 0);
+  els.precoVenda.value = state.pricing.sale > 0 ? formatMoneyInput(state.pricing.sale) : "";
+  els.feePercent.value = formatNumber(state.pricing.feePercent || 0, 2);
+  els.salesChannel.value = ["counter","whatsapp","ifood","marketplace"].includes(state.pricing.channel) ? state.pricing.channel : "counter";
+}
+function renderAll() { renderRecipeSelect(); renderRecipe(); renderIngredients(); renderModels(); renderPricing(); }
+
+function updateProfitPresets() {
+  const margin = parseNumberBR(els.margemLucro.value);
+  document.querySelectorAll("[data-profit]").forEach((b) => b.classList.toggle("is-active", Number(b.dataset.profit) === margin));
+}
+
+els.formItem.addEventListener("submit", (e) => {
+  e.preventDefault(); clearErrors();
+  const name = els.itemNome.value.trim(), price = parseNumberBR(els.itemPrecoTotal.value), qty = parseNumberBR(els.itemQtdCompra.value), unit = els.itemUnidadeCompra.value;
+  let ok = true;
+  if (name.length < 2) { showFieldError(els.itemNome, "Informe um nome válido."); ok = false; }
+  if (!(price > 0)) { showFieldError(els.itemPrecoTotal, "Informe quanto você pagou."); ok = false; }
+  if (!(qty > 0)) { showFieldError(els.itemQtdCompra, "Informe a quantidade comprada."); ok = false; }
+  if (!ok) return;
+  state.items.unshift({ id: uid(), name, unitBuy: unit, priceTotal: price, qtyBought: qty, unitCostBase: unitCost(price, qty, unit) });
+  els.itemNome.value = ""; els.itemPrecoTotal.value = ""; els.itemQtdCompra.value = ""; save(); renderAll(); els.itemNome.focus();
+});
+
+els.ingredientList.addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-action]"); if (!btn) return;
+  const id = btn.dataset.id, action = btn.dataset.action, it = state.items.find((x) => x.id === id); if (!it) return;
+  if (action === "edit-item") { editingItemId = id; renderIngredients(); requestAnimationFrame(() => els.ingredientList.querySelector(`[data-item-id="${id}"] [data-edit="name"]`)?.focus()); }
+  if (action === "cancel-item") { editingItemId = null; renderIngredients(); }
+  if (action === "delete-item") {
+    if (!await confirmModal(`Excluir “${it.name}”? Ele também será removido das receitas que estiver usando.`, "Excluir item")) return;
+    state.items = state.items.filter((x) => x.id !== id); state.recipe = state.recipe.filter((r) => r.itemId !== id); editingItemId = null; save(); renderAll();
+  }
+  if (action === "save-item") {
+    const row = els.ingredientList.querySelector(`[data-item-id="${id}"]`); if (!row) return;
+    const name = row.querySelector('[data-edit="name"]').value.trim(), price = parseNumberBR(row.querySelector('[data-edit="price"]').value), qty = parseNumberBR(row.querySelector('[data-edit="qty"]').value), unit = row.querySelector('[data-edit="unit"]').value;
+    if (name.length < 2 || !(price > 0) || !(qty > 0)) { await openModal({ title: "Confira os dados", body: "Preencha nome, preço e quantidade com valores válidos." }); return; }
+    it.name = name; it.priceTotal = price; it.qtyBought = qty; it.unitBuy = unit; it.unitCostBase = unitCost(price, qty, unit);
+    state.recipe.forEach((r) => { if (r.itemId === id) r.cost = r.qtyUsedBase * it.unitCostBase; }); editingItemId = null; save(); renderAll();
   }
 });
 
-btnLimparReceita.addEventListener("click", async () => {
-  if (!state.recipe.length) return;
-  const ok = await modalConfirm("Limpar todos os itens da receita atual?", "Limpar receita");
-  if (!ok) return;
+els.formUso.addEventListener("submit", (e) => {
+  e.preventDefault(); clearErrors();
+  const itemId = els.usoItem.value, qty = parseNumberBR(els.usoQtd.value), it = state.items.find((x) => x.id === itemId);
+  if (!it) { showFieldError(els.usoItem, "Escolha um item cadastrado."); return; }
+  if (!(qty > 0)) { showFieldError(els.usoQtd, "Informe quanto você usa."); return; }
+  const existing = state.recipe.find((r) => r.itemId === itemId);
+  if (existing) { existing.qtyUsedBase += qty; existing.cost = existing.qtyUsedBase * it.unitCostBase; }
+  else state.recipe.push({ id: uid(), itemId, qtyUsedBase: qty, cost: qty * it.unitCostBase });
+  els.usoQtd.value = ""; save(); renderAll(); els.usoQtd.focus();
+});
+els.usoItem.addEventListener("change", updateUsageUnit);
 
-  state.recipe = [];
-  editingRecipeId = null;
-  save();
-  renderAll();
+els.recipeList.addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-action]"); if (!btn) return;
+  const id = btn.dataset.id, action = btn.dataset.action, r = state.recipe.find((x) => x.id === id); if (!r) return;
+  if (action === "edit-recipe") { editingRecipeId = id; renderRecipe(); requestAnimationFrame(() => els.recipeList.querySelector(`[data-edit-recipe="${id}"]`)?.focus()); }
+  if (action === "cancel-recipe") { editingRecipeId = null; renderRecipe(); }
+  if (action === "delete-recipe") { state.recipe = state.recipe.filter((x) => x.id !== id); editingRecipeId = null; save(); renderAll(); }
+  if (action === "save-recipe") {
+    const input = els.recipeList.querySelector(`[data-edit-recipe="${id}"]`), qty = parseNumberBR(input?.value), it = state.items.find((x) => x.id === r.itemId);
+    if (!(qty > 0) || !it) return; r.qtyUsedBase = qty; r.cost = qty * it.unitCostBase; editingRecipeId = null; save(); renderAll();
+  }
 });
 
-[numPorcoes, margemLucro, taxaExtra, precoVenda, feePercent].forEach((el) => {
-  el.addEventListener("input", renderKPIs);
-  el.addEventListener("blur", () => {
-    applyFormatOnBlur(el);
-    renderKPIs();
+[els.productName, els.numPorcoes, els.feePercent, els.taxaExtra, els.margemLucro, els.precoVenda].forEach((el) => el.addEventListener("input", renderPricing));
+els.salesChannel.addEventListener("change", () => { renderPricing(); });
+document.querySelectorAll("[data-profit]").forEach((btn) => btn.addEventListener("click", () => { els.margemLucro.value = btn.dataset.profit; renderPricing(); }));
+
+function snapshotModel(name) {
+  const includedIds = new Set(state.recipe.map((r) => r.itemId));
+  const items = state.items.filter((it) => includedIds.has(it.id)).map((it) => ({ name: it.name, unitBuy: it.unitBuy, priceTotal: it.priceTotal, qtyBought: it.qtyBought, unitCostBase: it.unitCostBase }));
+  const keyById = new Map(state.items.map((it) => [it.id, `${it.name.trim().toLowerCase()}|${it.unitBuy}`]));
+  const recipe = state.recipe.map((r) => ({ itemKey: keyById.get(r.itemId), qtyUsedBase: r.qtyUsedBase })).filter((r) => r.itemKey);
+  return { id: uid(), name, productName: els.productName.value.trim() || name, createdAt: Date.now(), items, recipe, pricing: { ...state.pricing } };
+}
+
+els.btnSaveModel.addEventListener("click", async () => {
+  els.modelNameErr.textContent = "";
+  const name = els.modelName.value.trim() || els.productName.value.trim();
+  if (!name) { els.modelNameErr.textContent = "Dê um nome ao produto antes de salvar."; return; }
+  if (!state.recipe.length) { await openModal({ title: "Produto vazio", body: "Adicione pelo menos um ingrediente antes de salvar." }); return; }
+  const same = state.models.findIndex((m) => m.name.toLowerCase() === name.toLowerCase());
+  if (same >= 0) { if (!await confirmModal(`Já existe um produto chamado “${name}”. Substituir?`, "Salvar produto")) return; state.models.splice(same, 1); }
+  state.models.unshift(snapshotModel(name)); els.modelName.value = ""; save(); renderModels();
+});
+
+function loadModel(m) {
+  const idByKey = new Map();
+  m.items.forEach((mi) => {
+    const key = `${mi.name.trim().toLowerCase()}|${mi.unitBuy}`;
+    let existing = state.items.find((it) => `${it.name.trim().toLowerCase()}|${it.unitBuy}` === key);
+    if (!existing) { existing = { id: uid(), name: mi.name, unitBuy: mi.unitBuy, priceTotal: mi.priceTotal, qtyBought: mi.qtyBought, unitCostBase: unitCost(mi.priceTotal, mi.qtyBought, mi.unitBuy) }; state.items.push(existing); }
+    idByKey.set(key, existing.id);
   });
+  state.recipe = m.recipe.map((r) => {
+    const itemId = idByKey.get(r.itemKey); const it = state.items.find((x) => x.id === itemId); if (!it) return null;
+    return { id: uid(), itemId, qtyUsedBase: r.qtyUsedBase, cost: r.qtyUsedBase * it.unitCostBase };
+  }).filter(Boolean);
+  state.pricing = { ...defaultPricing(), ...(m.pricing || {}) };
+  state.productName = m.productName || m.name;
+  renderInputsFromState(); save(); renderAll(); window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+els.modelsList.addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-action]"); if (!btn) return; const m = state.models.find((x) => x.id === btn.dataset.id); if (!m) return;
+  if (btn.dataset.action === "load-model") loadModel(m);
+  if (btn.dataset.action === "delete-model") { if (!await confirmModal(`Excluir o produto salvo “${m.name}”?`, "Excluir produto")) return; state.models = state.models.filter((x) => x.id !== m.id); save(); renderModels(); }
 });
 
-// Autoformat nos inputs principais (16)
-[itemPrecoTotal, itemQtdCompra, usoQtd, modelName].forEach((el) => {
-  if (!el) return;
-  if (el === modelName) return;
-  el.addEventListener("blur", () => applyFormatOnBlur(el));
-});
-
-pricingMethod.addEventListener("change", () => {
-  state.pricing.method = pricingMethod.value === "margin" ? "margin" : "markup";
-  renderKPIs();
-});
-
-itemSearch.addEventListener("input", renderItemsTable);
-
-btnReset.addEventListener("click", async () => {
-  const ok = await modalConfirm("Tem certeza que deseja limpar todos os itens e a receita? Essa ação não pode ser desfeita.", "Limpar tudo");
-  if (!ok) return;
-
-  state.items = [];
-  state.recipe = [];
-  state.models = [];
-  state.pricing = { portions: 1, margin: 70, extra: 0, sale: 0, method: "markup", feePercent: 0 };
-
-  localStorage.removeItem(STORAGE_KEY_V1);
-  localStorage.removeItem(STORAGE_KEY_V2);
-
-  editingItemId = null;
-  editingRecipeId = null;
-
-  renderAll();
-});
-
-btnDemo.addEventListener("click", () => {
-  state.items = [
-    {
-      id: uid(),
-      name: "Açaí",
-      unitBuy: "kg",
-      priceTotal: 79.9,
-      qtyBought: 10,
-      unitCostBase: calcUnitCostBRL(79.9, 10, "kg"),
-    },
-    {
-      id: uid(),
-      name: "Leite em pó",
-      unitBuy: "kg",
-      priceTotal: 32.0,
-      qtyBought: 1,
-      unitCostBase: calcUnitCostBRL(32.0, 1, "kg"),
-    },
-    {
-      id: uid(),
-      name: "Granola",
-      unitBuy: "g",
-      priceTotal: 9.5,
-      qtyBought: 500,
-      unitCostBase: calcUnitCostBRL(9.5, 500, "g"),
-    },
-    {
-      id: uid(),
-      name: "Banana",
-      unitBuy: "kg",
-      priceTotal: 6.9,
-      qtyBought: 1,
-      unitCostBase: calcUnitCostBRL(6.9, 1, "kg"),
-    },
-    {
-      id: uid(),
-      name: "Copo 500ml",
-      unitBuy: "un",
-      priceTotal: 45,
-      qtyBought: 100,
-      unitCostBase: calcUnitCostBRL(45, 100, "un"),
-    },
+els.btnDemo.addEventListener("click", async () => {
+  const demo = [
+    ["Açaí", "kg", 79.90, 10], ["Leite em pó", "kg", 32, 1], ["Banana", "kg", 6.90, 1], ["Granola", "g", 9.50, 500], ["Copo 500ml", "un", 45, 100]
   ];
-
-  state.recipe = [];
-  state.pricing = { portions: 1, margin: 70, extra: 0, sale: 0, method: "markup", feePercent: 0 };
-
-  save();
-  renderAll();
+  demo.forEach(([name, unitBuy, priceTotal, qtyBought]) => {
+    if (!state.items.some((x) => x.name.toLowerCase() === name.toLowerCase())) state.items.push({ id: uid(), name, unitBuy, priceTotal, qtyBought, unitCostBase: unitCost(priceTotal, qtyBought, unitBuy) });
+  });
+  save(); renderAll(); els.ingredientManager.open = true;
 });
 
-btnExport.addEventListener("click", exportJSON);
-btnExportCSV.addEventListener("click", exportCSV);
-
-fileImport.addEventListener("change", async (e) => {
-  const file = e.target.files && e.target.files[0];
-  if (!file) return;
-
-  try {
-    const txt = await file.text();
-    const raw = JSON.parse(txt);
-
-    const cleaned = validateImportedState(raw);
-    state.items = cleaned.items;
-    state.recipe = cleaned.recipe;
-    state.pricing = cleaned.pricing;
-    state.models = cleaned.models;
-
-    editingItemId = null;
-    editingRecipeId = null;
-
-    save();
-    renderAll();
-    await modalAlert("Importado com sucesso!", "Importar");
-  } catch (_) {
-    await modalAlert("Falha ao importar: arquivo inválido ou estrutura incorreta.", "Importar");
-  } finally {
-    fileImport.value = "";
-  }
+function exportBackup() {
+  const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "precificacao-backup.json"; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+}
+els.btnExport.addEventListener("click", exportBackup);
+els.fileImport.addEventListener("change", async (e) => {
+  const file = e.target.files?.[0]; if (!file) return;
+  try { Object.assign(state, normalizeState(JSON.parse(await file.text()))); renderInputsFromState(); save(); renderAll(); await openModal({ title: "Backup importado", body: "Seus dados foram carregados com sucesso." }); }
+  catch { await openModal({ title: "Não foi possível importar", body: "O arquivo não parece ser um backup válido desta ferramenta." }); }
+  finally { e.target.value = ""; }
 });
 
-btnHelp.addEventListener("click", openHelp);
-
-/* Modelos */
-btnClearModelName.addEventListener("click", () => {
-  modelName.value = "";
-  modelName.focus();
+els.btnReset.addEventListener("click", async () => {
+  if (!await confirmModal("Isso apaga ingredientes, composição e produtos salvos deste navegador. Deseja continuar?", "Limpar todos os dados")) return;
+  state.items = []; state.recipe = []; state.models = []; state.pricing = defaultPricing(); state.productName = ""; editingItemId = null; editingRecipeId = null;
+  localStorage.removeItem(STORAGE_KEY); localStorage.removeItem(LEGACY_KEY); renderInputsFromState(); renderAll();
 });
 
-btnSaveModel.addEventListener("click", async () => {
-  // validação leve
-  document.getElementById("modelNameErr").textContent = "";
-  modelName.closest(".field").classList.remove("field--error");
-
-  const name = modelName.value.trim();
-
-  if (!state.recipe.length) {
-    modelName.closest(".field").classList.add("field--error");
-    document.getElementById("modelNameErr").textContent = "Monte uma receita antes de salvar um modelo.";
-    return;
-  }
-
-  if (!name || name.length < 3) {
-    modelName.closest(".field").classList.add("field--error");
-    document.getElementById("modelNameErr").textContent = "Informe um nome (mínimo 3 caracteres).";
-    modelName.focus();
-    return;
-  }
-
-  const ok = saveCurrentAsModel(name);
-  if (!ok) {
-    await modalAlert("Não foi possível salvar. Verifique se a receita tem itens.", "Modelos");
-    return;
-  }
-
-  modelName.value = "";
-  modelName.focus();
+els.btnHelp.addEventListener("click", () => {
+  const wrap = document.createElement("div"); wrap.className = "help-list";
+  [["1. Cadastre os ingredientes", "Abra “Gerenciar ingredientes e embalagens” e informe quanto pagou e quanto comprou."], ["2. Monte o produto", "Escolha cada ingrediente e diga quanto usa. O custo é calculado automaticamente."], ["3. Escolha onde vende", "No iFood ou outro app, informe a taxa total cobrada do seu plano."], ["4. Escolha o lucro", "Informe quanto gostaria que sobrasse como lucro em cada venda."], ["5. Veja o preço", "A ferramenta calcula o preço sugerido, o mínimo para não perder dinheiro e compara com seu preço atual."]].forEach(([t,d]) => { const box = document.createElement("div"); const strong = document.createElement("strong"); const span = document.createElement("span"); strong.textContent=t; span.textContent=d; box.append(strong,span); wrap.appendChild(box); });
+  openModal({ title: "Como usar", body: wrap });
 });
 
-tbodyModels.addEventListener("click", async (e) => {
-  const btn = e.target.closest("button[data-action]");
-  if (!btn) return;
+els.modalRoot.addEventListener("click", (e) => { if (e.target?.dataset?.modalClose === "true") closeModal(null); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !els.modalRoot.hidden) closeModal(null); });
 
-  const action = btn.getAttribute("data-action");
-  const id = btn.getAttribute("data-id");
-  const m = state.models.find((x) => x.id === id);
-  if (!m) return;
-
-  if (action === "load-model") {
-    const ok = await modalConfirm(`Carregar o modelo “${m.name}”? Isso substituirá a receita atual.`, "Carregar modelo");
-    if (!ok) return;
-
-    loadModel(id);
-    return;
-  }
-
-  if (action === "delete-model") {
-    const ok = await modalConfirm(`Excluir o modelo “${m.name}”?`, "Excluir modelo");
-    if (!ok) return;
-
-    state.models = state.models.filter((x) => x.id !== id);
-    save();
-    renderModelsTable();
-    return;
-  }
-
-  if (action === "duplicate-model") {
-    const newName = await modalPrompt({
-      title: "Duplicar modelo",
-      label: "Novo nome do modelo",
-      defaultValue: `${m.name} (cópia)`,
-      placeholder: "Ex.: Açaí 700ml Premium",
-    });
-
-    if (newName == null) return;
-
-    const clean = String(newName).trim();
-    if (!clean || clean.length < 3) {
-      await modalAlert("Informe um nome válido (mínimo 3 caracteres).", "Duplicar modelo");
-      return;
-    }
-
-    state.models.unshift({
-      ...m,
-      id: uid(),
-      name: clean,
-      createdAt: Date.now(),
-      items: m.items.map((item) => ({ ...item })),
-      recipe: m.recipe.map((row) => ({ ...row })),
-      pricing: { ...m.pricing },
-    });
-
-    save();
-    renderModelsTable();
-  }
-});
-
-/* Atalho Enter em edição inline (14) */
-document.addEventListener("keydown", (e) => {
-  if (e.key !== "Enter") return;
-  if (modalRoot && !modalRoot.hidden) return;
-
-  const active = document.activeElement;
-  if (!active) return;
-
-  const rowItem = active.closest && active.closest('tr[data-row="item-edit"]');
-  if (rowItem) {
-    e.preventDefault();
-    const id = rowItem.getAttribute("data-id");
-    const btn = rowItem.querySelector(`button[data-action="save-item"][data-id="${id}"]`);
-    if (btn) btn.click();
-    return;
-  }
-
-  const rowRecipe = active.closest && active.closest('tr[data-row="recipe-edit"]');
-  if (rowRecipe) {
-    e.preventDefault();
-    const id = rowRecipe.getAttribute("data-id");
-    const btn = rowRecipe.querySelector(`button[data-action="save-recipe"][data-id="${id}"]`);
-    if (btn) btn.click();
-  }
-});
-
-/* =========================
-   Init
-========================= */
-document.getElementById("year").textContent = String(new Date().getFullYear());
-appVersion.textContent = APP_VERSION;
+document.querySelectorAll("[data-format]").forEach((input) => input.addEventListener("blur", () => {
+  const type = input.dataset.format, n = parseNumberBR(input.value); if (!input.value.trim()) return;
+  if (type === "currency") input.value = formatMoneyInput(Math.max(0,n)); else if (type === "int") input.value = String(Math.max(1,Math.floor(n||1))); else input.value = formatNumber(Math.max(0,n),2);
+  if (["numPorcoes","feePercent","taxaExtra","margemLucro","precoVenda"].includes(input.id)) renderPricing();
+}));
 
 load();
+renderInputsFromState();
+els.appVersion.textContent = APP_VERSION;
 renderAll();
