@@ -1,6 +1,6 @@
 "use strict";
 
-const APP_VERSION = "v2.1.0";
+const APP_VERSION = "v2.1.1";
 const STORAGE_KEY = "custos_dashboard_v2";
 const LEGACY_KEY = "custos_dashboard_v1";
 const brl = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
@@ -15,19 +15,32 @@ function parseNumberBR(value) {
   let s = String(value).trim().replace(/\s/g, "").replace(/R\$/gi, "").replace(/%/g, "");
   if (!s) return 0;
 
+  s = s.replace(/[^0-9,+\-.]/g, "");
   const lastComma = s.lastIndexOf(",");
   const lastDot = s.lastIndexOf(".");
+
+  // Quando há ponto e vírgula, o último separador é tratado como decimal.
   if (lastComma >= 0 && lastDot >= 0) {
-    if (lastComma > lastDot) s = s.replace(/\./g, "").replace(",", ".");
+    if (lastComma > lastDot) s = s.replace(/\./g, "").replace(/,/g, ".");
     else s = s.replace(/,/g, "");
   } else if (lastComma >= 0) {
-    s = s.replace(/\./g, "").replace(",", ".");
-  } else if ((s.match(/\./g) || []).length > 1) {
-    const parts = s.split(".");
-    const decimal = parts.pop();
-    s = parts.join("") + "." + decimal;
+    // Em pt-BR, vírgula é o separador decimal.
+    s = s.replace(/\./g, "").replace(/,/g, ".");
+  } else if (lastDot >= 0) {
+    const sign = s.startsWith("-") || s.startsWith("+") ? s[0] : "";
+    const unsigned = sign ? s.slice(1) : s;
+    const groups = unsigned.split(".");
+
+    if (groups.length > 2 && groups.slice(1).every((g) => g.length === 3)) {
+      // Ex.: 1.234.567 -> 1234567
+      s = sign + groups.join("");
+    } else if (groups.length === 2 && groups[1].length === 3 && groups[0] !== "0") {
+      // No contexto brasileiro, 1.000 normalmente significa mil.
+      s = sign + groups.join("");
+    }
+    // Caso contrário o ponto continua como decimal: 75.90 ou 0.250.
   }
-  s = s.replace(/[^0-9+\-.]/g, "");
+
   const n = Number(s);
   return Number.isFinite(n) ? n : 0;
 }
@@ -108,17 +121,30 @@ function normalizeState(raw) {
   }
 
   const p = raw.pricing && typeof raw.pricing === "object" ? raw.pricing : {};
+  const portions = Math.max(1, Math.floor(Number(p.portions) || 1));
+  const feePercent = clamp(Number(p.feePercent) || 0, 0, 95);
+  const legacyV2 = p.method === "markup" || p.method === "margin";
   let margin = Number(p.margin);
-  // Na versão anterior "margin" podia ser markup. Para não trazer 70% como alvo de lucro por engano,
-  // mantemos valores plausíveis de margem e usamos 20% quando o dado antigo era markup.
-  if (p.method === "markup" && margin > 50) margin = 20;
+  let extra = Math.max(0, Number(p.extra) || 0);
+
+  if (legacyV2) {
+    // Na V2 anterior, "extra" era custo da receita inteira. Agora é custo por venda.
+    extra = extra / portions;
+    if (p.method === "markup" && Number.isFinite(margin)) {
+      // Converte markup antigo para a margem sobre venda equivalente, preservando o mesmo preço calculado.
+      const markupRate = Math.max(0, margin) / 100;
+      const feeRate = feePercent / 100;
+      margin = markupRate > 0 ? (markupRate / (1 + markupRate)) * (1 - feeRate) * 100 : 0;
+    }
+  }
+
   out.pricing = {
-    portions: Math.max(1, Math.floor(Number(p.portions) || 1)),
+    portions,
     margin: clamp(Number.isFinite(margin) ? margin : 20, 0, 90),
-    extra: Math.max(0, Number(p.extra) || 0),
+    extra,
     sale: Math.max(0, Number(p.sale) || 0),
-    feePercent: clamp(Number(p.feePercent) || 0, 0, 95),
-    channel: ["counter", "whatsapp", "ifood", "marketplace"].includes(p.channel) ? p.channel : ((Number(p.feePercent) || 0) > 0 ? "marketplace" : "counter"),
+    feePercent,
+    channel: ["counter", "whatsapp", "ifood", "marketplace"].includes(p.channel) ? p.channel : (feePercent > 0 ? "marketplace" : "counter"),
   };
 
   if (Array.isArray(raw.models)) {
@@ -134,11 +160,22 @@ function normalizeState(raw) {
       }).filter(Boolean) : [];
       const modelRecipe = Array.isArray(m.recipe) ? m.recipe.map((r) => ({ itemKey: String(r?.itemKey || "").trim(), qtyUsedBase: Number(r?.qtyUsedBase) })).filter((r) => r.itemKey && r.qtyUsedBase > 0) : [];
       const mp = m.pricing || {};
+      const modelPortions = Math.max(1, Math.floor(Number(mp.portions) || 1));
+      const modelFeePercent = clamp(Number(mp.feePercent) || 0, 0, 95);
+      const legacyModelV2 = mp.method === "markup" || mp.method === "margin";
       let mm = Number(mp.margin);
-      if (mp.method === "markup" && mm > 50) mm = 20;
+      let modelExtra = Math.max(0, Number(mp.extra) || 0);
+      if (legacyModelV2) {
+        modelExtra = modelExtra / modelPortions;
+        if (mp.method === "markup" && Number.isFinite(mm)) {
+          const markupRate = Math.max(0, mm) / 100;
+          const feeRate = modelFeePercent / 100;
+          mm = markupRate > 0 ? (markupRate / (1 + markupRate)) * (1 - feeRate) * 100 : 0;
+        }
+      }
       return {
         id: String(m?.id || uid()), name, createdAt: Number(m?.createdAt) || Date.now(), items: modelItems, recipe: modelRecipe,
-        pricing: { portions: Math.max(1, Math.floor(Number(mp.portions) || 1)), margin: clamp(Number.isFinite(mm) ? mm : 20, 0, 90), extra: Math.max(0, Number(mp.extra) || 0), sale: Math.max(0, Number(mp.sale) || 0), feePercent: clamp(Number(mp.feePercent) || 0, 0, 95), channel: ["counter", "whatsapp", "ifood", "marketplace"].includes(mp.channel) ? mp.channel : ((Number(mp.feePercent) || 0) > 0 ? "marketplace" : "counter") },
+        pricing: { portions: modelPortions, margin: clamp(Number.isFinite(mm) ? mm : 20, 0, 90), extra: modelExtra, sale: Math.max(0, Number(mp.sale) || 0), feePercent: modelFeePercent, channel: ["counter", "whatsapp", "ifood", "marketplace"].includes(mp.channel) ? mp.channel : (modelFeePercent > 0 ? "marketplace" : "counter") },
         productName: String(m?.productName || m?.name || "").slice(0, 80),
       };
     }).filter(Boolean);
@@ -293,7 +330,7 @@ function renderPricing() {
   els.resultProfit.textContent = brl.format(Math.max(0, c.profit));
   els.breakEvenPrice.textContent = brl.format(c.breakEven);
   els.detailIngredients.textContent = brl.format(c.ingredientsPer);
-  els.detailExtra.textContent = brl.format(c.extra / c.portions);
+  els.detailExtra.textContent = brl.format(c.extra);
   els.detailFeePercent.textContent = `${formatNumber(c.appliedFeePercent, 2)}%`;
   els.detailProfitPercent.textContent = `${formatNumber(c.margin, 2)}%`;
 
