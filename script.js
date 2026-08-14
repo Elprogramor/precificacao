@@ -3,7 +3,7 @@
 /* =========================
    Versão + Helpers
 ========================= */
-const APP_VERSION = "v1.0.0";
+const APP_VERSION = "v2.0.0";
 const STORAGE_KEY_V2 = "custos_dashboard_v2";
 const STORAGE_KEY_V1 = "custos_dashboard_v1";
 
@@ -11,7 +11,38 @@ const brl = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" 
 
 function parseNumberBR(value) {
   if (value == null) return 0;
-  const s = String(value).trim().replace(/\./g, "").replace(",", ".");
+
+  let s = String(value)
+    .trim()
+    .replace(/\s/g, "")
+    .replace(/^R\$/i, "");
+
+  if (!s) return 0;
+
+  const lastComma = s.lastIndexOf(",");
+  const lastDot = s.lastIndexOf(".");
+
+  if (lastComma >= 0 && lastDot >= 0) {
+    if (lastComma > lastDot) {
+      // pt-BR: 1.234,56
+      s = s.replace(/\./g, "").replace(",", ".");
+    } else {
+      // formato internacional: 1,234.56
+      s = s.replace(/,/g, "");
+    }
+  } else if (lastComma >= 0) {
+    // 1234,56
+    s = s.replace(/\./g, "").replace(",", ".");
+  } else if (lastDot >= 0) {
+    // Aceita ponto como separador decimal. Se houver vários, preserva apenas o último.
+    const parts = s.split(".");
+    if (parts.length > 2) {
+      const decimal = parts.pop();
+      s = `${parts.join("")}.${decimal}`;
+    }
+  }
+
+  s = s.replace(/[^0-9+\-.]/g, "");
   const n = Number(s);
   return Number.isFinite(n) ? n : 0;
 }
@@ -113,8 +144,7 @@ function openModal({ title, body, actions }) {
     btn.className = a.className || "btn btn--ghost";
     btn.textContent = a.label;
     btn.addEventListener("click", () => {
-      closeModal();
-      if (modalResolver) modalResolver(a.value);
+      closeModal(a.value);
     });
     modalActions.appendChild(btn);
   });
@@ -128,7 +158,7 @@ function openModal({ title, body, actions }) {
   });
 }
 
-function closeModal() {
+function closeModal(value = null) {
   modalRoot.hidden = true;
   document.body.style.overflow = "";
   const resolve = modalResolver;
@@ -136,23 +166,19 @@ function closeModal() {
   if (lastFocused && typeof lastFocused.focus === "function") {
     requestAnimationFrame(() => lastFocused.focus());
   }
-  return resolve;
+  if (resolve) resolve(value);
 }
 
 modalRoot.addEventListener("click", (e) => {
   const close = e.target && e.target.getAttribute && e.target.getAttribute("data-modal-close");
-  if (close === "true") {
-    closeModal();
-    if (modalResolver) modalResolver(null);
-  }
+  if (close === "true") closeModal(null);
 });
 
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     if (!modalRoot.hidden) {
       e.preventDefault();
-      closeModal();
-      if (modalResolver) modalResolver(null);
+      closeModal(null);
       return;
     }
 
@@ -228,7 +254,7 @@ async function modalPrompt({ title, label, defaultValue = "", placeholder = "" }
 const state = {
   items: [],   // {id, name, unitBuy, priceTotal, qtyBought, unitCostBase}
   recipe: [],  // {id, itemId, qtyUsedBase, cost}
-  pricing: { portions: 1, margin: 70, extra: 0, sale: 0 },
+  pricing: { portions: 1, margin: 70, extra: 0, sale: 0, method: "markup", feePercent: 0 },
   models: [],  // {id, name, createdAt, items:[], recipe:[], pricing:{}}
 };
 
@@ -260,6 +286,26 @@ const numPorcoes = document.getElementById("numPorcoes");
 const margemLucro = document.getElementById("margemLucro");
 const taxaExtra = document.getElementById("taxaExtra");
 const precoVenda = document.getElementById("precoVenda");
+const pricingMethod = document.getElementById("pricingMethod");
+const feePercent = document.getElementById("feePercent");
+const margemLabel = document.getElementById("margemLabel");
+const margemHelp = document.getElementById("margemHelp");
+const methodHelp = document.getElementById("methodHelp");
+
+const resultSuggested = document.getElementById("resultSuggested");
+const resultMethod = document.getElementById("resultMethod");
+const kpiBreakEven = document.getElementById("kpiBreakEven");
+const kpiFeeEstimated = document.getElementById("kpiFeeEstimated");
+const kpiSuggestedMargin = document.getElementById("kpiSuggestedMargin");
+const kpiFoodCost = document.getElementById("kpiFoodCost");
+const pricingHealth = document.getElementById("pricingHealth");
+const pricingHealthText = document.getElementById("pricingHealthText");
+
+const statItems = document.getElementById("statItems");
+const statRecipe = document.getElementById("statRecipe");
+const statModels = document.getElementById("statModels");
+const lastSaved = document.getElementById("lastSaved");
+const itemSearch = document.getElementById("itemSearch");
 
 const kpiCustoTotal = document.getElementById("kpiCustoTotal");
 const kpiCustoPorcao = document.getElementById("kpiCustoPorcao");
@@ -268,7 +314,6 @@ const kpiLucroEstimado = document.getElementById("kpiLucroEstimado");
 const kpiDetalhe = document.getElementById("kpiDetalhe");
 
 const boxLucroReal = document.getElementById("boxLucroReal");
-const boxMargemReal = document.getElementById("boxMargemReal");
 const kpiLucroReal = document.getElementById("kpiLucroReal");
 const kpiMargemReal = document.getElementById("kpiMargemReal");
 
@@ -289,6 +334,10 @@ const appVersion = document.getElementById("appVersion");
 ========================= */
 function save() {
   localStorage.setItem(STORAGE_KEY_V2, JSON.stringify(state));
+  if (lastSaved) {
+    const now = new Date();
+    lastSaved.textContent = `Salvo às ${now.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
+  }
 }
 
 function migrateFromV1IfNeeded() {
@@ -305,7 +354,7 @@ function migrateFromV1IfNeeded() {
     const migrated = {
       items: Array.isArray(data.items) ? data.items : [],
       recipe: Array.isArray(data.recipe) ? data.recipe : [],
-      pricing: data.pricing && typeof data.pricing === "object" ? data.pricing : { portions: 1, margin: 70, extra: 0, sale: 0 },
+      pricing: data.pricing && typeof data.pricing === "object" ? data.pricing : { portions: 1, margin: 70, extra: 0, sale: 0, method: "markup", feePercent: 0 },
       models: [],
     };
 
@@ -338,7 +387,7 @@ function validateImportedState(data) {
   const out = {
     items: [],
     recipe: [],
-    pricing: { portions: 1, margin: 70, extra: 0, sale: 0 },
+    pricing: { portions: 1, margin: 70, extra: 0, sale: 0, method: "markup", feePercent: 0 },
     models: [],
   };
 
@@ -380,10 +429,13 @@ function validateImportedState(data) {
   // Pricing
   if (data.pricing && typeof data.pricing === "object") {
     const portions = Math.max(1, Math.floor(Number(data.pricing.portions) || 1));
-    const margin = clamp(Number(data.pricing.margin) || 70, 0, 10000);
+    const importedMargin = Number(data.pricing.margin);
+    const margin = Number.isFinite(importedMargin) ? clamp(importedMargin, 0, 10000) : 70;
     const extra = Math.max(0, Number(data.pricing.extra) || 0);
     const sale = Math.max(0, Number(data.pricing.sale) || 0);
-    out.pricing = { portions, margin, extra, sale };
+    const method = data.pricing.method === "margin" ? "margin" : "markup";
+    const feePercent = clamp(Number(data.pricing.feePercent) || 0, 0, 99.9);
+    out.pricing = { portions, margin, extra, sale, method, feePercent };
   }
 
   // Recipe (só aceita itemId existente)
@@ -451,11 +503,13 @@ function validateImportedState(data) {
         const pricing = m.pricing && typeof m.pricing === "object"
           ? {
               portions: Math.max(1, Math.floor(Number(m.pricing.portions) || 1)),
-              margin: clamp(Number(m.pricing.margin) || 70, 0, 10000),
+              margin: Number.isFinite(Number(m.pricing.margin)) ? clamp(Number(m.pricing.margin), 0, 10000) : 70,
               extra: Math.max(0, Number(m.pricing.extra) || 0),
               sale: Math.max(0, Number(m.pricing.sale) || 0),
+              method: m.pricing.method === "margin" ? "margin" : "markup",
+              feePercent: clamp(Number(m.pricing.feePercent) || 0, 0, 99.9),
             }
-          : { portions: 1, margin: 70, extra: 0, sale: 0 };
+          : { portions: 1, margin: 70, extra: 0, sale: 0, method: "markup", feePercent: 0 };
 
         return { id, name, createdAt, items, recipe, pricing };
       })
@@ -531,21 +585,27 @@ function validateRecipeForm() {
 }
 
 function validatePricingInputs() {
-  // valida sem bloquear total (apenas corrige)
   const portions = Math.max(1, Math.floor(parseNumberBR(numPorcoes.value) || 1));
   const margin = Math.max(0, parseNumberBR(margemLucro.value) || 0);
   const extra = Math.max(0, parseNumberBR(taxaExtra.value) || 0);
   const sale = Math.max(0, parseNumberBR(precoVenda.value) || 0);
+  const method = pricingMethod && pricingMethod.value === "margin" ? "margin" : "markup";
+  const fee = clamp(parseNumberBR(feePercent ? feePercent.value : 0) || 0, 0, 99.9);
 
-  // aplica correções visuais leves
-  clearErrors(document.querySelector(".pricing"));
+  clearErrors(document.querySelector(".pricing-controls") || document.querySelector(".pricing-panel"));
 
   if (parseNumberBR(numPorcoes.value) <= 0) setFieldError(numPorcoes, "Use 1 ou mais porções.");
-  if (parseNumberBR(margemLucro.value) < 0) setFieldError(margemLucro, "Margem não pode ser negativa.");
-  if (parseNumberBR(taxaExtra.value) < 0) setFieldError(taxaExtra, "Extras não podem ser negativos.");
-  if (parseNumberBR(precoVenda.value) < 0) setFieldError(precoVenda, "Preço de venda não pode ser negativo.");
+  if (parseNumberBR(margemLucro.value) < 0) setFieldError(margemLucro, "O percentual não pode ser negativo.");
+  if (parseNumberBR(taxaExtra.value) < 0) setFieldError(taxaExtra, "Os custos extras não podem ser negativos.");
+  if (parseNumberBR(precoVenda.value) < 0) setFieldError(precoVenda, "O preço de venda não pode ser negativo.");
+  if (feePercent && (parseNumberBR(feePercent.value) < 0 || parseNumberBR(feePercent.value) >= 100)) {
+    setFieldError(feePercent, "Use uma taxa entre 0% e 99,9%.");
+  }
+  if (method === "margin" && margin + fee >= 100) {
+    setFieldError(margemLucro, "Margem + taxa sobre a venda deve ser menor que 100%.");
+  }
 
-  return { portions, margin, extra, sale };
+  return { portions, margin, extra, sale, method, feePercent: fee };
 }
 
 /* =========================
@@ -580,6 +640,7 @@ function applyFormatOnBlur(el) {
    Render
 ========================= */
 function renderItemsTable() {
+  if (statItems) statItems.textContent = String(state.items.length);
   tbodyItens.innerHTML = "";
 
   if (!state.items.length) {
@@ -587,15 +648,33 @@ function renderItemsTable() {
       <tr class="empty">
         <td colspan="5">
           <div class="empty__box">
-            <strong>Nenhum item cadastrado ainda.</strong>
-            <span>Cadastre acima para começar a montar a receita.</span>
+            <strong>Nenhum insumo cadastrado.</strong>
+            <span>Cadastre o primeiro item acima para começar a montar sua base de custos.</span>
           </div>
         </td>
       </tr>`;
     return;
   }
 
-  const rows = state.items
+  const query = normalizeNameKey(itemSearch ? itemSearch.value : "");
+  const visibleItems = query
+    ? state.items.filter((it) => normalizeNameKey(it.name).includes(query))
+    : state.items;
+
+  if (!visibleItems.length) {
+    tbodyItens.innerHTML = `
+      <tr class="empty">
+        <td colspan="5">
+          <div class="empty__box">
+            <strong>Nenhum insumo encontrado.</strong>
+            <span>Tente outro termo de busca.</span>
+          </div>
+        </td>
+      </tr>`;
+    return;
+  }
+
+  const rows = visibleItems
     .map((it) => {
       const unitBase = displayUnit(it.unitBuy);
       const shownUnitCost = `${brl.format(it.unitCostBase)} / ${unitBase}`;
@@ -680,6 +759,7 @@ function renderItemsSelect() {
 }
 
 function renderRecipeTable() {
+  if (statRecipe) statRecipe.textContent = String(state.recipe.length);
   tbodyReceita.innerHTML = "";
 
   if (!state.recipe.length) {
@@ -687,8 +767,8 @@ function renderRecipeTable() {
       <tr class="empty">
         <td colspan="4">
           <div class="empty__box">
-            <strong>Receita vazia.</strong>
-            <span>Adicione itens para calcular o custo do seu açaí.</span>
+            <strong>Composição vazia.</strong>
+            <span>Adicione um insumo para começar a calcular o custo do produto.</span>
           </div>
         </td>
       </tr>`;
@@ -759,6 +839,7 @@ function renderRecipeTable() {
 }
 
 function renderModelsTable() {
+  if (statModels) statModels.textContent = String(state.models.length);
   tbodyModels.innerHTML = "";
 
   if (!state.models.length) {
@@ -784,7 +865,7 @@ function renderModelsTable() {
           <td>
             <div class="cell-title">
               <strong>${escapeHtml(m.name)}</strong>
-              <span class="muted">${m.recipe.length} item(ns) • porções ${m.pricing.portions} • margem ${m.pricing.margin}%</span>
+              <span class="muted">${m.recipe.length} item(ns) • ${m.pricing.portions} porção(ões) • ${m.pricing.method === "margin" ? "margem" : "markup"} ${m.pricing.margin}%</span>
             </div>
           </td>
           <td class="right">${escapeHtml(when)}</td>
@@ -810,44 +891,99 @@ function renderModelsTable() {
 
 function renderKPIs() {
   const totalBase = state.recipe.reduce((acc, r) => acc + (r.cost || 0), 0);
-
-  const { portions, margin, extra, sale } = validatePricingInputs();
+  const { portions, margin, extra, sale, method, feePercent: fee } = validatePricingInputs();
 
   const costWithExtra = totalBase + extra;
   const costPer = costWithExtra / portions;
+  const feeRate = fee / 100;
+  const netFactor = Math.max(0.001, 1 - feeRate);
 
-  const suggested = costPer * (1 + margin / 100);
-  const profitSuggested = suggested - costPer;
+  let suggested = 0;
+  if (costPer > 0) {
+    if (method === "margin") {
+      const targetMarginRate = margin / 100;
+      const divisor = 1 - feeRate - targetMarginRate;
+      suggested = divisor > 0 ? costPer / divisor : 0;
+    } else {
+      const targetAfterFee = costPer * (1 + margin / 100);
+      suggested = targetAfterFee / netFactor;
+    }
+  }
+
+  const suggestedFee = suggested * feeRate;
+  const profitSuggested = suggested > 0 ? suggested - suggestedFee - costPer : 0;
+  const suggestedMargin = suggested > 0 ? (profitSuggested / suggested) * 100 : 0;
+  const breakEven = costPer > 0 ? costPer / netFactor : 0;
+  const referencePrice = sale > 0 ? sale : suggested;
+  const foodCost = referencePrice > 0 ? (costPer / referencePrice) * 100 : 0;
 
   kpiCustoTotal.textContent = brl.format(costWithExtra);
   kpiCustoPorcao.textContent = brl.format(costPer);
   kpiPrecoSugerido.textContent = brl.format(suggested);
   kpiLucroEstimado.textContent = brl.format(profitSuggested);
+  resultSuggested.textContent = brl.format(suggested);
+  kpiBreakEven.textContent = brl.format(breakEven);
+  kpiFeeEstimated.textContent = brl.format(suggestedFee);
+  kpiSuggestedMargin.textContent = `${formatNumberBR(suggestedMargin, 2)}%`;
+  kpiFoodCost.textContent = `${formatNumberBR(foodCost, 2)}%`;
 
-  const detail = `Custo base ${brl.format(totalBase)} + extras ${brl.format(extra)} • ${portions} porção(ões) • margem ${margin}%`;
-  kpiDetalhe.textContent = detail;
+  if (method === "margin") {
+    margemLabel.textContent = "Margem desejada sobre venda (%)";
+    margemHelp.textContent = "Percentual do preço que deve permanecer como lucro.";
+    methodHelp.textContent = "Margem: calcula o preço para atingir um lucro percentual sobre a venda.";
+    resultMethod.textContent = `Margem-alvo ${formatNumberBR(margin, 2)}% • taxa ${formatNumberBR(fee, 2)}%`;
+  } else {
+    margemLabel.textContent = "Acréscimo desejado (%)";
+    margemHelp.textContent = "Ex.: 70 = custo + 70%, antes da taxa sobre a venda.";
+    methodHelp.textContent = "Markup: aplica um acréscimo sobre o custo e compensa a taxa percentual.";
+    resultMethod.textContent = `Markup ${formatNumberBR(margin, 2)}% • taxa ${formatNumberBR(fee, 2)}%`;
+  }
 
-  // Preço praticado (9)
+  kpiDetalhe.textContent = state.recipe.length
+    ? `${portions} porção(ões) • taxa ${formatNumberBR(fee, 2)}%`
+    : "Monte a composição para calcular";
+
   if (sale > 0) {
-    const realProfit = sale - costPer;
-    const realMargin = sale > 0 ? (realProfit / sale) * 100 : 0;
+    const realFee = sale * feeRate;
+    const realProfit = sale - realFee - costPer;
+    const realMargin = (realProfit / sale) * 100;
 
     boxLucroReal.hidden = false;
-    boxMargemReal.hidden = false;
-
     kpiLucroReal.textContent = brl.format(realProfit);
     kpiMargemReal.textContent = `${formatNumberBR(realMargin, 2)}%`;
+
+    if (costPer <= 0) {
+      pricingHealth.dataset.status = "neutral";
+      pricingHealthText.textContent = "Aguardando composição";
+    } else if (sale < breakEven) {
+      pricingHealth.dataset.status = "bad";
+      pricingHealthText.textContent = "Preço abaixo do custo";
+    } else if (suggested > 0 && sale < suggested * 0.98) {
+      pricingHealth.dataset.status = "warn";
+      pricingHealthText.textContent = "Preço abaixo do sugerido";
+    } else {
+      pricingHealth.dataset.status = "good";
+      pricingHealthText.textContent = "Preço em faixa saudável";
+    }
   } else {
     boxLucroReal.hidden = true;
-    boxMargemReal.hidden = true;
     kpiLucroReal.textContent = brl.format(0);
     kpiMargemReal.textContent = "0%";
+    pricingHealth.dataset.status = state.recipe.length ? "good" : "neutral";
+    pricingHealthText.textContent = state.recipe.length ? "Preço sugerido calculado" : "Aguardando composição";
+  }
+
+  if (method === "margin" && margin + fee >= 100) {
+    pricingHealth.dataset.status = "bad";
+    pricingHealthText.textContent = "Margem + taxa inválidas";
   }
 
   state.pricing.portions = portions;
   state.pricing.margin = margin;
   state.pricing.extra = extra;
   state.pricing.sale = sale;
+  state.pricing.method = method;
+  state.pricing.feePercent = fee;
 
   renderBreakdown(totalBase);
   save();
@@ -937,6 +1073,12 @@ function renderAll() {
   margemLucro.value = String(state.pricing.margin ?? 70);
   taxaExtra.value = formatMoneyInput(Number(state.pricing.extra ?? 0));
   precoVenda.value = state.pricing.sale ? formatMoneyInput(Number(state.pricing.sale)) : "";
+  pricingMethod.value = state.pricing.method === "margin" ? "margin" : "markup";
+  feePercent.value = formatNumberBR(Number(state.pricing.feePercent ?? 0), 2);
+
+  statItems.textContent = String(state.items.length);
+  statRecipe.textContent = String(state.recipe.length);
+  statModels.textContent = String(state.models.length);
 
   renderKPIs();
 }
@@ -1059,6 +1201,8 @@ function loadModel(modelId) {
     margin: Math.max(0, Number(m.pricing.margin) || 0),
     extra: Math.max(0, Number(m.pricing.extra) || 0),
     sale: Math.max(0, Number(m.pricing.sale) || 0),
+    method: m.pricing.method === "margin" ? "margin" : "markup",
+    feePercent: clamp(Number(m.pricing.feePercent) || 0, 0, 99.9),
   };
 
   editingItemId = null;
@@ -1093,11 +1237,15 @@ function csvEscape(value) {
 }
 
 function exportCSV() {
-  const { portions, margin, extra, sale } = validatePricingInputs();
+  const { portions, margin, extra, sale, method, feePercent: fee } = validatePricingInputs();
   const totalBase = state.recipe.reduce((acc, r) => acc + (r.cost || 0), 0);
   const total = totalBase + extra;
   const costPer = total / portions;
-  const suggested = costPer * (1 + margin / 100);
+  const feeRate = fee / 100;
+  const netFactor = Math.max(0.001, 1 - feeRate);
+  const suggested = method === "margin"
+    ? ((1 - feeRate - margin / 100) > 0 ? costPer / (1 - feeRate - margin / 100) : 0)
+    : (costPer * (1 + margin / 100)) / netFactor;
 
   // agrupa receita por item
   const byItem = new Map();
@@ -1115,7 +1263,9 @@ function exportCSV() {
   lines.push(["Resumo", "Custo total (R$)", total.toFixed(2)].map(csvEscape).join(";"));
   lines.push(["Resumo", "Porções", portions].map(csvEscape).join(";"));
   lines.push(["Resumo", "Custo por porção (R$)", costPer.toFixed(2)].map(csvEscape).join(";"));
-  lines.push(["Resumo", "Margem (%)", margin].map(csvEscape).join(";"));
+  lines.push(["Resumo", "Método", method === "margin" ? "Margem sobre venda" : "Markup sobre custo"].map(csvEscape).join(";"));
+  lines.push(["Resumo", method === "margin" ? "Margem-alvo (%)" : "Markup (%)", margin].map(csvEscape).join(";"));
+  lines.push(["Resumo", "Taxa sobre venda (%)", fee].map(csvEscape).join(";"));
   lines.push(["Resumo", "Preço sugerido (R$)", suggested.toFixed(2)].map(csvEscape).join(";"));
   lines.push(["Resumo", "Preço praticado (R$)", sale ? sale.toFixed(2) : ""].map(csvEscape).join(";"));
   lines.push("");
@@ -1173,8 +1323,9 @@ function openHelp() {
   const steps = [
     ["Cadastre seus itens", "Informe nome, unidade de compra, preço pago e quantidade comprada. O sistema calcula o custo por g/ml/un automaticamente."],
     ["Monte a receita", "Selecione um item e informe a quantidade usada na unidade base (g/ml/un)."],
-    ["Ajuste porções e margem", "Defina quantas porções a receita rende e a margem de lucro desejada. Adicione extras (embalagem, taxa do app)."],
-    ["Use o preço praticado", "Se você já vende por um valor fixo, preencha “Preço de venda praticado” para ver lucro e margem reais."],
+    ["Escolha o método", "Use markup quando quiser acrescentar um percentual sobre o custo ou margem sobre venda quando quiser definir quanto do preço final deve permanecer como lucro."],
+    ["Inclua taxas", "Informe custos extras da receita e taxas percentuais cobradas sobre a venda, como marketplace, cartão ou gateway."],
+    ["Compare o preço praticado", "Preencha o preço que você já cobra para ver lucro real, margem, food cost e se está abaixo do ponto de equilíbrio ou do preço sugerido."],
     ["Salve modelos", "Depois de montar uma receita, salve como modelo (Açaí 500ml, 700ml, 1L) para recarregar em segundos."],
   ];
 
@@ -1447,7 +1598,7 @@ btnLimparReceita.addEventListener("click", async () => {
   renderAll();
 });
 
-[numPorcoes, margemLucro, taxaExtra, precoVenda].forEach((el) => {
+[numPorcoes, margemLucro, taxaExtra, precoVenda, feePercent].forEach((el) => {
   el.addEventListener("input", renderKPIs);
   el.addEventListener("blur", () => {
     applyFormatOnBlur(el);
@@ -1462,6 +1613,13 @@ btnLimparReceita.addEventListener("click", async () => {
   el.addEventListener("blur", () => applyFormatOnBlur(el));
 });
 
+pricingMethod.addEventListener("change", () => {
+  state.pricing.method = pricingMethod.value === "margin" ? "margin" : "markup";
+  renderKPIs();
+});
+
+itemSearch.addEventListener("input", renderItemsTable);
+
 btnReset.addEventListener("click", async () => {
   const ok = await modalConfirm("Tem certeza que deseja limpar todos os itens e a receita? Essa ação não pode ser desfeita.", "Limpar tudo");
   if (!ok) return;
@@ -1469,7 +1627,7 @@ btnReset.addEventListener("click", async () => {
   state.items = [];
   state.recipe = [];
   state.models = [];
-  state.pricing = { portions: 1, margin: 70, extra: 0, sale: 0 };
+  state.pricing = { portions: 1, margin: 70, extra: 0, sale: 0, method: "markup", feePercent: 0 };
 
   localStorage.removeItem(STORAGE_KEY_V1);
   localStorage.removeItem(STORAGE_KEY_V2);
@@ -1525,8 +1683,7 @@ btnDemo.addEventListener("click", () => {
   ];
 
   state.recipe = [];
-  state.models = [];
-  state.pricing = { portions: 1, margin: 70, extra: 0, sale: 0 };
+  state.pricing = { portions: 1, margin: 70, extra: 0, sale: 0, method: "markup", feePercent: 0 };
 
   save();
   renderAll();
@@ -1648,6 +1805,9 @@ tbodyModels.addEventListener("click", async (e) => {
       id: uid(),
       name: clean,
       createdAt: Date.now(),
+      items: m.items.map((item) => ({ ...item })),
+      recipe: m.recipe.map((row) => ({ ...row })),
+      pricing: { ...m.pricing },
     });
 
     save();
@@ -1686,16 +1846,6 @@ document.addEventListener("keydown", (e) => {
 ========================= */
 document.getElementById("year").textContent = String(new Date().getFullYear());
 appVersion.textContent = APP_VERSION;
-
-[itemPrecoTotal, taxaExtra, precoVenda].forEach((el) => {
-  el.addEventListener("blur", () => applyFormatOnBlur(el));
-});
-[itemQtdCompra, usoQtd, margemLucro].forEach((el) => {
-  el.addEventListener("blur", () => applyFormatOnBlur(el));
-});
-[numPorcoes].forEach((el) => {
-  el.addEventListener("blur", () => applyFormatOnBlur(el));
-});
 
 load();
 renderAll();
