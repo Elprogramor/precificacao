@@ -1,411 +1,328 @@
-<!DOCTYPE html>
-<html lang="en">
-
-  <head>
-    <meta charset="UTF-8">
-    <title>Untitled</title>
-    <link rel="stylesheet" href="./style.css">
-
-  </head>
-    
-  <body>
-  <!doctype html>
+<!doctype html>
 <html lang="pt-BR">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Calculadora de Custo • Dashboard</title>
-    <meta
-      name="description"
-      content="Dashboard para calcular custo por unidade (kg/g/ml/un), custo total da receita e sugerir preço de venda com margem."
-    />
-    <link rel="stylesheet" href="styles.css" />
-  </head>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Ferramenta para calcular custo de receitas, analisar margem e definir preços de venda com mais clareza." />
+  <meta name="theme-color" content="#f5f6f8" />
+  <title>Precificação • Custos e Margem</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <a class="skip-link" href="#conteudo">Pular para o conteúdo</a>
 
-  <body>
-    <a class="skip-link" href="#conteudo">Pular para o conteúdo</a>
+  <header class="appbar" role="banner">
+    <div class="appbar__inner">
+      <a class="brand" href="#conteudo" aria-label="Ir para o início da ferramenta">
+        <span class="brand__mark" aria-hidden="true">P</span>
+        <span class="brand__copy">
+          <strong>Precificação</strong>
+          <small>Custos, margem e preço de venda</small>
+        </span>
+      </a>
 
-    <header class="topbar" role="banner">
-      <div class="topbar__inner">
-        <div class="brand">
-          <div class="brand__mark" aria-hidden="true">∑</div>
-          <div class="brand__text">
-            <strong>Dashboard de Custos</strong>
-            <span>Preço de custo → preço justo de venda</span>
-          </div>
-        </div>
+      <nav class="toolbar" aria-label="Ferramentas">
+        <button id="btnHelp" type="button" class="btn btn--quiet" title="Como usar (Alt+H)">
+          <span aria-hidden="true">?</span><span class="btn__label">Ajuda</span>
+        </button>
+        <button id="btnExportCSV" type="button" class="btn btn--quiet" title="Exportar para planilha">
+          <span aria-hidden="true">⇩</span><span class="btn__label">CSV</span>
+        </button>
+        <button id="btnExport" type="button" class="btn btn--quiet" title="Exportar backup JSON">
+          <span aria-hidden="true">⇩</span><span class="btn__label">Backup</span>
+        </button>
+        <label class="btn btn--quiet file-btn" title="Importar backup JSON">
+          <span aria-hidden="true">⇧</span><span class="btn__label">Importar</span>
+          <input id="fileImport" type="file" accept="application/json" />
+        </label>
+        <button id="btnReset" type="button" class="btn btn--danger btn--compact" title="Apagar todos os dados">
+          Limpar dados
+        </button>
+      </nav>
+    </div>
+  </header>
 
-        <div class="topbar__actions" aria-label="Ações do dashboard">
-          <button id="btnHelp" type="button" class="btn btn--ghost" title="Como usar (atalho Alt+H)">
-            Ajuda
-          </button>
-
-          <button id="btnExport" type="button" class="btn btn--ghost" title="Exportar dados (JSON)">
-            Exportar JSON
-          </button>
-
-          <button id="btnExportCSV" type="button" class="btn btn--ghost" title="Exportar dados (CSV para planilha)">
-            Exportar CSV
-          </button>
-
-          <label class="btn btn--ghost file-btn" title="Importar dados (JSON)">
-            Importar
-            <input id="fileImport" type="file" accept="application/json" />
-          </label>
-
-          <button id="btnReset" type="button" class="btn btn--danger" title="Limpar tudo (itens e receita)">
-            Limpar
-          </button>
-        </div>
+  <main id="conteudo" class="page" role="main">
+    <section class="page-head" aria-labelledby="pageTitle">
+      <div>
+        <span class="eyebrow">Painel de precificação</span>
+        <h1 id="pageTitle">Entenda seu custo antes de definir o preço.</h1>
+        <p>Cadastre insumos, monte a composição do produto e compare o preço ideal com o preço que você realmente pratica.</p>
       </div>
-    </header>
 
-    <main id="conteudo" class="wrap" role="main">
-      <section class="grid">
-        <!-- COLUNA ESQUERDA: cadastro de ingredientes -->
-        <section class="card" aria-labelledby="titCadastro">
-          <header class="card__head">
-            <h1 id="titCadastro">Cadastro de itens</h1>
-            <p class="muted">
-              Cadastre o que você compra (ex.: açaí, leite em pó, banana, granola). O sistema calcula o custo por unidade.
-            </p>
-          </header>
-
-          <form id="formItem" class="form" autocomplete="off" novalidate>
-            <div class="form__row">
-              <div class="field">
-                <label for="itemNome">Nome do item</label>
-                <input
-                  id="itemNome"
-                  name="itemNome"
-                  type="text"
-                  placeholder="Ex.: Açaí"
-                  required
-                  aria-describedby="itemNomeHelp itemNomeErr"
-                />
-                <small id="itemNomeHelp" class="help">Ex.: Açaí, leite em pó, granola, copo 500ml…</small>
-                <small id="itemNomeErr" class="error" aria-live="polite"></small>
-              </div>
-
-              <div class="field">
-                <label for="itemUnidadeCompra">Unidade de compra</label>
-                <select id="itemUnidadeCompra" name="itemUnidadeCompra" required aria-describedby="itemUnidadeErr">
-                  <option value="kg">Quilo (kg)</option>
-                  <option value="g">Grama (g)</option>
-                  <option value="l">Litro (L)</option>
-                  <option value="ml">Mililitro (ml)</option>
-                  <option value="un">Unidade (un)</option>
-                </select>
-                <small id="itemUnidadeErr" class="error" aria-live="polite"></small>
-              </div>
-            </div>
-
-            <div class="form__row">
-              <div class="field">
-                <label for="itemPrecoTotal">Preço pago (R$)</label>
-                <input
-                  id="itemPrecoTotal"
-                  name="itemPrecoTotal"
-                  inputmode="decimal"
-                  type="text"
-                  placeholder="Ex.: 75,90"
-                  required
-                  data-format="currency"
-                  aria-describedby="itemPrecoHelp itemPrecoErr"
-                />
-                <small id="itemPrecoHelp" class="help">Aceita vírgula ou ponto.</small>
-                <small id="itemPrecoErr" class="error" aria-live="polite"></small>
-              </div>
-
-              <div class="field">
-                <label for="itemQtdCompra">Quantidade comprada</label>
-                <input
-                  id="itemQtdCompra"
-                  name="itemQtdCompra"
-                  inputmode="decimal"
-                  type="text"
-                  placeholder="Ex.: 10"
-                  required
-                  data-format="number"
-                  aria-describedby="itemQtdHelp itemQtdErr"
-                />
-                <small id="itemQtdHelp" class="help">Ex.: 10 kg, 2000 g, 12 un…</small>
-                <small id="itemQtdErr" class="error" aria-live="polite"></small>
-              </div>
-            </div>
-
-            <div class="form__row">
-              <button type="submit" class="btn btn--primary">Adicionar item</button>
-              <button id="btnDemo" type="button" class="btn btn--ghost">Carregar exemplo</button>
-            </div>
-          </form>
-
-          <div class="table-wrap" role="region" aria-label="Tabela de itens cadastrados" tabindex="0">
-            <table class="table" aria-describedby="itensDesc">
-              <caption id="itensDesc">
-                Itens cadastrados. O custo por unidade é calculado automaticamente com base no preço e quantidade comprada.
-              </caption>
-              <thead>
-                <tr>
-                  <th>Item</th>
-                  <th class="right">Preço pago</th>
-                  <th class="right">Qtd. comprada</th>
-                  <th class="right">Custo por unidade</th>
-                  <th class="right">Ações</th>
-                </tr>
-              </thead>
-              <tbody id="tbodyItens">
-                <tr class="empty">
-                  <td colspan="5">
-                    <div class="empty__box">
-                      <strong>Nenhum item cadastrado ainda.</strong>
-                      <span>Cadastre acima para começar a montar a receita.</span>
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <!-- COLUNA DIREITA: receita + resultados -->
-        <section class="card" aria-labelledby="titReceita">
-          <header class="card__head">
-            <h2 id="titReceita">Montagem da receita</h2>
-            <p class="muted">
-              Selecione um item cadastrado e informe quanto você usou. O custo final da receita será atualizado em tempo real.
-            </p>
-          </header>
-
-          <form id="formUso" class="form form--compact" autocomplete="off" novalidate>
-            <div class="form__row">
-              <div class="field">
-                <label for="usoItem">Item</label>
-                <select id="usoItem" required aria-describedby="usoItemErr">
-                  <option value="" disabled selected>Selecione um item cadastrado</option>
-                </select>
-                <small id="usoItemErr" class="error" aria-live="polite"></small>
-              </div>
-
-              <div class="field">
-                <label for="usoQtd">Quantidade usada</label>
-                <input
-                  id="usoQtd"
-                  inputmode="decimal"
-                  type="text"
-                  placeholder="Ex.: 200"
-                  required
-                  data-format="number"
-                  aria-describedby="usoHint usoQtdErr"
-                />
-                <small id="usoHint" class="help">A unidade será a mesma do item (ex.: g, ml, un).</small>
-                <small id="usoQtdErr" class="error" aria-live="polite"></small>
-              </div>
-            </div>
-
-            <div class="form__row">
-              <button type="submit" class="btn btn--primary">Adicionar à receita</button>
-              <button id="btnLimparReceita" type="button" class="btn btn--ghost">Limpar receita</button>
-            </div>
-          </form>
-
-          <div class="table-wrap" role="region" aria-label="Tabela da receita" tabindex="0">
-            <table class="table table--soft">
-              <thead>
-                <tr>
-                  <th>Item</th>
-                  <th class="right">Qtd. usada</th>
-                  <th class="right">Custo (R$)</th>
-                  <th class="right">Ações</th>
-                </tr>
-              </thead>
-              <tbody id="tbodyReceita">
-                <tr class="empty">
-                  <td colspan="4">
-                    <div class="empty__box">
-                      <strong>Receita vazia.</strong>
-                      <span>Adicione itens para calcular o custo do seu açaí.</span>
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          <!-- MODELOS -->
-          <section class="models" aria-label="Modelos salvos">
-            <header class="models__head">
-              <h3 class="models__title">Modelos de receita</h3>
-              <p class="muted models__sub">
-                Salve suas montagens (ex.: Açaí 500ml, 700ml, 1L) e recarregue quando quiser.
-              </p>
-            </header>
-
-            <div class="models__bar">
-              <div class="field">
-                <label for="modelName">Nome do modelo</label>
-                <input
-                  id="modelName"
-                  type="text"
-                  placeholder="Ex.: Açaí 500ml Tradicional"
-                  aria-describedby="modelNameHelp modelNameErr"
-                />
-                <small id="modelNameHelp" class="help">Dica: use nomes por tamanho/sabor para reaproveitar rápido.</small>
-                <small id="modelNameErr" class="error" aria-live="polite"></small>
-              </div>
-
-              <div class="models__actions">
-                <button id="btnSaveModel" type="button" class="btn btn--primary">Salvar modelo</button>
-                <button id="btnClearModelName" type="button" class="btn btn--ghost">Limpar nome</button>
-              </div>
-            </div>
-
-            <div class="table-wrap" role="region" aria-label="Tabela de modelos" tabindex="0">
-              <table class="table table--soft">
-                <thead>
-                  <tr>
-                    <th>Modelo</th>
-                    <th class="right">Criado</th>
-                    <th class="right">Ações</th>
-                  </tr>
-                </thead>
-                <tbody id="tbodyModels">
-                  <tr class="empty">
-                    <td colspan="3">
-                      <div class="empty__box">
-                        <strong>Nenhum modelo salvo.</strong>
-                        <span>Monte uma receita e clique em “Salvar modelo”.</span>
-                      </div>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </section>
-
-          <hr class="sep" />
-
-          <section class="summary" aria-label="Resumo de custos e precificação">
-            <div class="summary__grid">
-              <div class="kpi">
-                <span class="kpi__label">Custo total da receita</span>
-                <strong id="kpiCustoTotal" class="kpi__value">R$ 0,00</strong>
-                <span class="kpi__sub muted">Soma de todos os itens usados + extras</span>
-              </div>
-
-              <div class="kpi">
-                <span class="kpi__label">Custo por porção</span>
-                <strong id="kpiCustoPorcao" class="kpi__value">R$ 0,00</strong>
-                <span class="kpi__sub muted">Custo total ÷ nº de porções</span>
-              </div>
-            </div>
-
-            <div class="pricing">
-              <div class="pricing__row">
-                <div class="field">
-                  <label for="numPorcoes">Número de porções</label>
-                  <input id="numPorcoes" inputmode="numeric" type="text" value="1" data-format="int" aria-describedby="porcoesHelp porcoesErr" />
-                  <small id="porcoesHelp" class="help">Se você monta 1 copo por vez, deixe 1.</small>
-                  <small id="porcoesErr" class="error" aria-live="polite"></small>
-                </div>
-
-                <div class="field">
-                  <label for="margemLucro">Margem de lucro (%)</label>
-                  <input id="margemLucro" inputmode="decimal" type="text" value="70" data-format="number" aria-describedby="margemHelp margemErr" />
-                  <small id="margemHelp" class="help">Ex.: 70 = +70% sobre o custo.</small>
-                  <small id="margemErr" class="error" aria-live="polite"></small>
-                </div>
-
-                <div class="field">
-                  <label for="taxaExtra">Taxas/Extras (R$)</label>
-                  <input id="taxaExtra" inputmode="decimal" type="text" value="0" data-format="currency" aria-describedby="extraHelp extraErr" />
-                  <small id="extraHelp" class="help">Ex.: embalagem, taxa do app, etc.</small>
-                  <small id="extraErr" class="error" aria-live="polite"></small>
-                </div>
-
-                <div class="field">
-                  <label for="precoVenda">Preço de venda praticado (R$)</label>
-                  <input id="precoVenda" inputmode="decimal" type="text" placeholder="Opcional" data-format="currency" aria-describedby="vendaHelp vendaErr" />
-                  <small id="vendaHelp" class="help">Se você já vende por um valor fixo, informe aqui.</small>
-                  <small id="vendaErr" class="error" aria-live="polite"></small>
-                </div>
-              </div>
-
-              <div class="pricing__result" aria-live="polite">
-                <div class="pricebox">
-                  <span class="pricebox__label">Preço sugerido (por porção)</span>
-                  <strong id="kpiPrecoSugerido" class="pricebox__value">R$ 0,00</strong>
-                  <span id="kpiDetalhe" class="pricebox__sub muted">—</span>
-                </div>
-
-                <div class="pricebox pricebox--soft">
-                  <span class="pricebox__label">Lucro estimado (por porção)</span>
-                  <strong id="kpiLucroEstimado" class="pricebox__value">R$ 0,00</strong>
-                  <span class="pricebox__sub muted">Preço sugerido − custo por porção</span>
-                </div>
-
-                <div class="pricebox pricebox--real" id="boxLucroReal" hidden>
-                  <span class="pricebox__label">Lucro real (por porção)</span>
-                  <strong id="kpiLucroReal" class="pricebox__value">R$ 0,00</strong>
-                  <span class="pricebox__sub muted">Preço praticado − custo por porção</span>
-                </div>
-
-                <div class="pricebox pricebox--soft" id="boxMargemReal" hidden>
-                  <span class="pricebox__label">Margem real sobre venda</span>
-                  <strong id="kpiMargemReal" class="pricebox__value">0%</strong>
-                  <span class="pricebox__sub muted">Lucro real ÷ preço praticado</span>
-                </div>
-              </div>
-            </div>
-
-            <section class="breakdown" aria-label="Distribuição de custos">
-              <header class="breakdown__head">
-                <h3 class="breakdown__title">Distribuição de custos</h3>
-                <p class="muted breakdown__sub">Veja quais itens mais pesam no custo final.</p>
-              </header>
-
-              <div id="breakdownList" class="breakdown__list" role="list">
-                <div class="breakdown__empty muted">Adicione itens na receita para ver a distribuição.</div>
-              </div>
-            </section>
-
-            <p class="note">
-              Dica: se você compra em <strong>kg</strong> e usa em <strong>g</strong>, o sistema converte automaticamente (1 kg = 1000 g).
-              O mesmo vale para <strong>L</strong> e <strong>ml</strong> (1 L = 1000 ml).
-            </p>
-          </section>
-        </section>
-      </section>
-    </main>
-
-    <footer class="footer" role="contentinfo">
-      <div class="footer__inner">
-        <span class="muted">© <span id="year"></span> • Calculadora de custo e preço justo • <span id="appVersion">v—</span></span>
-        <span class="muted">Feito para uso prático (açaí, lanches, doces, etc.)</span>
+      <div class="workspace-status" aria-label="Resumo da base">
+        <div class="status-chip"><strong id="statItems">0</strong><span>insumos</span></div>
+        <div class="status-chip"><strong id="statRecipe">0</strong><span>itens na receita</span></div>
+        <div class="status-chip"><strong id="statModels">0</strong><span>modelos</span></div>
+        <div class="save-status"><span class="save-status__dot"></span><span id="lastSaved">Salvo localmente</span></div>
       </div>
-    </footer>
+    </section>
 
-    <!-- Modal (confirm/alert/prompt + ajuda) -->
-    <div id="modalRoot" class="modal" hidden>
-      <div class="modal__backdrop" data-modal-close="true"></div>
+    <section class="metrics" aria-label="Indicadores principais">
+      <article class="metric-card">
+        <span class="metric-card__label">Custo total da receita</span>
+        <strong id="kpiCustoTotal" class="metric-card__value">R$ 0,00</strong>
+        <small>Ingredientes + custos extras</small>
+      </article>
+      <article class="metric-card">
+        <span class="metric-card__label">Custo por porção</span>
+        <strong id="kpiCustoPorcao" class="metric-card__value">R$ 0,00</strong>
+        <small>Custo total ÷ rendimento</small>
+      </article>
+      <article class="metric-card metric-card--accent">
+        <span class="metric-card__label">Preço sugerido</span>
+        <strong id="kpiPrecoSugerido" class="metric-card__value">R$ 0,00</strong>
+        <small id="kpiDetalhe">Ajuste os parâmetros de precificação</small>
+      </article>
+      <article class="metric-card">
+        <span class="metric-card__label">Lucro estimado</span>
+        <strong id="kpiLucroEstimado" class="metric-card__value">R$ 0,00</strong>
+        <small>Por porção, já considerando a taxa percentual</small>
+      </article>
+    </section>
 
-      <div class="modal__dialog" role="dialog" aria-modal="true" aria-labelledby="modalTitle" aria-describedby="modalDesc" tabindex="-1">
-        <header class="modal__head">
-          <h2 id="modalTitle" class="modal__title">Título</h2>
-          <button class="modal__close" type="button" data-modal-close="true" aria-label="Fechar modal" title="Fechar (Esc)">✕</button>
+    <section class="workspace-grid">
+      <article class="panel panel--ingredients" aria-labelledby="titCadastro">
+        <header class="panel__head">
+          <div>
+            <span class="step">01</span>
+            <h2 id="titCadastro">Insumos e embalagens</h2>
+            <p>Cadastre tudo que entra no custo do produto. A conversão de kg/L para g/ml é automática.</p>
+          </div>
+          <button id="btnDemo" type="button" class="btn btn--secondary">Carregar exemplo</button>
         </header>
 
-        <div id="modalDesc" class="modal__body"></div>
+        <form id="formItem" class="form-grid form-grid--ingredients" autocomplete="off" novalidate>
+          <div class="field field--wide">
+            <label for="itemNome">Nome do item</label>
+            <input id="itemNome" name="itemNome" type="text" placeholder="Ex.: Açaí, leite em pó, copo 500ml" required aria-describedby="itemNomeHelp itemNomeErr" />
+            <small id="itemNomeHelp" class="help">Use um nome fácil de identificar depois.</small>
+            <small id="itemNomeErr" class="error" aria-live="polite"></small>
+          </div>
 
-        <footer class="modal__actions" id="modalActions"></footer>
+          <div class="field">
+            <label for="itemUnidadeCompra">Unidade de compra</label>
+            <select id="itemUnidadeCompra" name="itemUnidadeCompra" required aria-describedby="itemUnidadeErr">
+              <option value="kg">Quilo (kg)</option>
+              <option value="g">Grama (g)</option>
+              <option value="l">Litro (L)</option>
+              <option value="ml">Mililitro (ml)</option>
+              <option value="un">Unidade (un)</option>
+            </select>
+            <small id="itemUnidadeErr" class="error" aria-live="polite"></small>
+          </div>
+
+          <div class="field">
+            <label for="itemPrecoTotal">Preço pago</label>
+            <div class="input-prefix"><span>R$</span><input id="itemPrecoTotal" name="itemPrecoTotal" inputmode="decimal" type="text" placeholder="75,90" required data-format="currency" aria-describedby="itemPrecoHelp itemPrecoErr" /></div>
+            <small id="itemPrecoHelp" class="help">Valor total da compra.</small>
+            <small id="itemPrecoErr" class="error" aria-live="polite"></small>
+          </div>
+
+          <div class="field">
+            <label for="itemQtdCompra">Quantidade comprada</label>
+            <input id="itemQtdCompra" name="itemQtdCompra" inputmode="decimal" type="text" placeholder="Ex.: 10" required data-format="number" aria-describedby="itemQtdHelp itemQtdErr" />
+            <small id="itemQtdHelp" class="help">Ex.: 10 kg, 500 g ou 100 un.</small>
+            <small id="itemQtdErr" class="error" aria-live="polite"></small>
+          </div>
+
+          <div class="form-action">
+            <button type="submit" class="btn btn--primary btn--wide">Adicionar insumo</button>
+          </div>
+        </form>
+
+        <div class="section-toolbar">
+          <div>
+            <strong>Base de custos</strong>
+            <span>Os valores unitários são recalculados automaticamente.</span>
+          </div>
+          <label class="search-box" for="itemSearch">
+            <span aria-hidden="true">⌕</span>
+            <input id="itemSearch" type="search" placeholder="Buscar insumo" autocomplete="off" />
+          </label>
+        </div>
+
+        <div class="table-wrap" role="region" aria-label="Tabela de itens cadastrados" tabindex="0">
+          <table class="table" aria-describedby="itensDesc">
+            <caption id="itensDesc">Itens cadastrados e seus respectivos custos unitários.</caption>
+            <thead><tr><th>Item</th><th class="right">Preço pago</th><th class="right">Qtd. comprada</th><th class="right">Custo unitário</th><th class="right">Ações</th></tr></thead>
+            <tbody id="tbodyItens"></tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="panel panel--recipe" aria-labelledby="titReceita">
+        <header class="panel__head">
+          <div>
+            <span class="step">02</span>
+            <h2 id="titReceita">Composição do produto</h2>
+            <p>Monte a receita usando os insumos cadastrados e veja o custo se atualizar em tempo real.</p>
+          </div>
+          <button id="btnLimparReceita" type="button" class="btn btn--secondary">Limpar receita</button>
+        </header>
+
+        <form id="formUso" class="recipe-adder" autocomplete="off" novalidate>
+          <div class="field field--grow">
+            <label for="usoItem">Insumo</label>
+            <select id="usoItem" required aria-describedby="usoItemErr"><option value="" disabled selected>Selecione um item cadastrado</option></select>
+            <small id="usoItemErr" class="error" aria-live="polite"></small>
+          </div>
+          <div class="field">
+            <label for="usoQtd">Quantidade usada</label>
+            <input id="usoQtd" inputmode="decimal" type="text" placeholder="Ex.: 200" required data-format="number" aria-describedby="usoHint usoQtdErr" />
+            <small id="usoHint" class="help">Informe na unidade base do item.</small>
+            <small id="usoQtdErr" class="error" aria-live="polite"></small>
+          </div>
+          <button type="submit" class="btn btn--primary recipe-adder__button">Adicionar</button>
+        </form>
+
+        <div class="table-wrap" role="region" aria-label="Tabela da receita" tabindex="0">
+          <table class="table table--soft">
+            <thead><tr><th>Item</th><th class="right">Quantidade</th><th class="right">Custo</th><th class="right">Ações</th></tr></thead>
+            <tbody id="tbodyReceita"></tbody>
+          </table>
+        </div>
+
+        <div class="recipe-footnote">
+          <span aria-hidden="true">i</span>
+          <p>Adicione embalagem, colher, tampa e outros consumíveis como itens sempre que quiser enxergar o custo com mais precisão.</p>
+        </div>
+      </article>
+    </section>
+
+    <section class="panel pricing-panel" aria-labelledby="pricingTitle">
+      <header class="panel__head panel__head--pricing">
+        <div>
+          <span class="step">03</span>
+          <h2 id="pricingTitle">Estratégia de preço</h2>
+          <p>Escolha se quer trabalhar com acréscimo sobre custo (markup) ou margem-alvo sobre a venda.</p>
+        </div>
+        <div id="pricingHealth" class="health-badge" data-status="neutral"><span class="health-badge__dot"></span><span id="pricingHealthText">Aguardando composição</span></div>
+      </header>
+
+      <div class="pricing-layout">
+        <div class="pricing-controls">
+          <div class="field">
+            <label for="pricingMethod">Método de precificação</label>
+            <select id="pricingMethod">
+              <option value="markup">Acréscimo sobre custo (markup)</option>
+              <option value="margin">Margem sobre a venda</option>
+            </select>
+            <small id="methodHelp" class="help">Markup: custo × (1 + percentual).</small>
+          </div>
+
+          <div class="control-grid">
+            <div class="field">
+              <label for="numPorcoes">Rendimento / porções</label>
+              <input id="numPorcoes" inputmode="numeric" type="text" value="1" data-format="int" aria-describedby="porcoesHelp porcoesErr" />
+              <small id="porcoesHelp" class="help">Quantas unidades a receita rende.</small>
+              <small id="porcoesErr" class="error" aria-live="polite"></small>
+            </div>
+            <div class="field">
+              <label id="margemLabel" for="margemLucro">Acréscimo desejado (%)</label>
+              <div class="input-suffix"><input id="margemLucro" inputmode="decimal" type="text" value="70" data-format="number" aria-describedby="margemHelp margemErr" /><span>%</span></div>
+              <small id="margemHelp" class="help">Ex.: 70 = custo + 70%.</small>
+              <small id="margemErr" class="error" aria-live="polite"></small>
+            </div>
+            <div class="field">
+              <label for="taxaExtra">Custos extras da receita</label>
+              <div class="input-prefix"><span>R$</span><input id="taxaExtra" inputmode="decimal" type="text" value="0" data-format="currency" aria-describedby="extraHelp extraErr" /></div>
+              <small id="extraHelp" class="help">Custos fixos não cadastrados nos insumos.</small>
+              <small id="extraErr" class="error" aria-live="polite"></small>
+            </div>
+            <div class="field">
+              <label for="feePercent">Taxa sobre a venda (%)</label>
+              <div class="input-suffix"><input id="feePercent" inputmode="decimal" type="text" value="0" data-format="number" aria-describedby="feeHelp feeErr" /><span>%</span></div>
+              <small id="feeHelp" class="help">Ex.: comissão de marketplace ou pagamento.</small>
+              <small id="feeErr" class="error" aria-live="polite"></small>
+            </div>
+            <div class="field field--span-2">
+              <label for="precoVenda">Preço de venda praticado</label>
+              <div class="input-prefix"><span>R$</span><input id="precoVenda" inputmode="decimal" type="text" placeholder="Opcional" data-format="currency" aria-describedby="vendaHelp vendaErr" /></div>
+              <small id="vendaHelp" class="help">Preencha para comparar seu preço atual com o preço calculado.</small>
+              <small id="vendaErr" class="error" aria-live="polite"></small>
+            </div>
+          </div>
+        </div>
+
+        <aside class="pricing-result" aria-live="polite">
+          <div class="pricing-result__hero">
+            <span>Preço sugerido por porção</span>
+            <strong id="resultSuggested">R$ 0,00</strong>
+            <small id="resultMethod">Com base nos parâmetros atuais</small>
+          </div>
+          <div class="result-grid">
+            <div><span>Ponto de equilíbrio</span><strong id="kpiBreakEven">R$ 0,00</strong></div>
+            <div><span>Taxa estimada</span><strong id="kpiFeeEstimated">R$ 0,00</strong></div>
+            <div><span>Margem sugerida</span><strong id="kpiSuggestedMargin">0%</strong></div>
+            <div><span>Food cost</span><strong id="kpiFoodCost">0%</strong></div>
+          </div>
+          <div id="boxLucroReal" class="real-price" hidden>
+            <div><span>Lucro real / porção</span><strong id="kpiLucroReal">R$ 0,00</strong></div>
+            <div><span>Margem real</span><strong id="kpiMargemReal">0%</strong></div>
+          </div>
+        </aside>
       </div>
+
+      <div class="breakdown" aria-label="Distribuição de custos">
+        <div class="section-toolbar section-toolbar--plain">
+          <div><strong>Distribuição do custo</strong><span>Veja quais componentes mais pesam no produto.</span></div>
+        </div>
+        <div id="breakdownList" class="breakdown__list" role="list"><div class="breakdown__empty muted">Adicione itens na receita para ver a distribuição.</div></div>
+      </div>
+
+    </section>
+
+    <section class="panel models" aria-labelledby="modelsTitle">
+      <header class="panel__head">
+        <div>
+          <span class="step">04</span>
+          <h2 id="modelsTitle">Modelos de produto</h2>
+          <p>Salve combinações recorrentes para comparar tamanhos, sabores e versões sem refazer o cálculo.</p>
+        </div>
+      </header>
+
+      <div class="models__bar">
+        <div class="field">
+          <label for="modelName">Nome do modelo</label>
+          <input id="modelName" type="text" placeholder="Ex.: Açaí 500ml Tradicional" aria-describedby="modelNameHelp modelNameErr" />
+          <small id="modelNameHelp" class="help">Use nomes que identifiquem tamanho e versão.</small>
+          <small id="modelNameErr" class="error" aria-live="polite"></small>
+        </div>
+        <div class="models__actions">
+          <button id="btnSaveModel" type="button" class="btn btn--primary">Salvar modelo</button>
+          <button id="btnClearModelName" type="button" class="btn btn--secondary">Limpar nome</button>
+        </div>
+      </div>
+
+      <div class="table-wrap" role="region" aria-label="Tabela de modelos" tabindex="0">
+        <table class="table table--soft">
+          <thead><tr><th>Modelo</th><th class="right">Criado</th><th class="right">Ações</th></tr></thead>
+          <tbody id="tbodyModels"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer" role="contentinfo">
+    <div class="footer__inner">
+      <span>© <span id="year"></span> • Ferramenta de precificação • <span id="appVersion">v—</span></span>
+      <span>Dados salvos somente neste navegador.</span>
     </div>
+  </footer>
 
-    <script src="app.js" defer></script>
-  </body>
-</html>
-    <script  src="./script.js"></script>
+  <div id="modalRoot" class="modal" hidden>
+    <div class="modal__backdrop" data-modal-close="true"></div>
+    <div class="modal__dialog" role="dialog" aria-modal="true" aria-labelledby="modalTitle" aria-describedby="modalDesc" tabindex="-1">
+      <header class="modal__head">
+        <h2 id="modalTitle" class="modal__title">Título</h2>
+        <button class="modal__close" type="button" data-modal-close="true" aria-label="Fechar modal" title="Fechar (Esc)">×</button>
+      </header>
+      <div id="modalDesc" class="modal__body"></div>
+      <footer class="modal__actions" id="modalActions"></footer>
+    </div>
+  </div>
 
-  </body>
-  
+  <script src="./script.js" defer></script>
+</body>
 </html>
